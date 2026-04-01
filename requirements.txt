@@ -1,0 +1,7 @@
+fastapi==0.115.2
+uvicorn==0.35.0
+pydantic==2.11.7
+requests==2.32.3
+openai==2.7.2
+openenv-core==0.2.3
+huggingface_hub==0.33.5

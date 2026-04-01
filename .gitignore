@@ -1,0 +1,35 @@
+# Reference/context docs (do not commit)
+all_details.md
+evaluationcriteria.md
+func_non _func.md
+key_requirements.md
+missing_pieces.md
+phase0.md
+phase1.md
+phase1_additional.md
+phase2.md
+phase2_additional.md
+phase3.md
+phase3_additional.md
+phase4.md
+phase4_additional.md
+phase5.md
+phase5_additional.md
+pre_validation_script.md
+project_summary.md
+references.md
+risks.md
+sample_inference_script.md
+traffic_openenv_checklist.md
+
+# Course/reference materials
+openenv-course/
+
+# Local caches
+__pycache__/
+*.pyc
+.venv/
+
+# Local secrets
+.env.openrouter
+.env*

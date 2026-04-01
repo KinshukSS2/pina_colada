@@ -1,0 +1,31 @@
+name: traffic-control-openenv
+description: Deterministic traffic signal control environment with emergency handling and fairness-aware grading.
+entry_point: server.main:app
+
+actions:
+  type: text
+  grammar:
+    - hold
+    - switch
+    - prioritize_emergency
+    - set_ns_green:<n>
+    - set_ew_green:<n>
+
+observations:
+  type: json
+  schema: Observation
+  keys:
+    - timestep
+    - current_phase
+    - queue_ns
+    - queue_ew
+    - emergency_ns
+    - emergency_ew
+
+tasks:
+  - id: easy
+    description: Balanced daytime traffic with low emergency pressure.
+  - id: medium
+    description: Directional rush-hour traffic with periodic emergency requests.
+  - id: hard
+    description: Congested bidirectional flow with emergency contention and fairness constraints.
