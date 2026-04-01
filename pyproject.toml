@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "traffic-control-openenv"
+version = "0.1.0"
+description = "Traffic control OpenEnv environment package"
+readme = "README.md"
+requires-python = ">=3.10,<3.12"
+dependencies = [
+	"openenv-core>=0.2.0",
+]
+
+[project.scripts]
+server = "server.app:main"
+
+[tool.setuptools]
+py-modules = ["inference", "validate_project", "validate_submission"]
+packages = ["server", "env"]
