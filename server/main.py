@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import FastAPI
 
 from env.environment import TrafficControlEnvironment
@@ -23,8 +25,15 @@ def root() -> dict:
 
 
 @app.post("/reset")
-def reset(request: ResetRequest) -> dict:
-    result = environment.reset(task_id=request.task_id, session_id=request.session_id)
+def reset(request: Optional[ResetRequest] = None) -> dict:
+    if request is None:
+        task_id = "easy"
+        session_id = None
+    else:
+        task_id = request.task_id
+        session_id = request.session_id
+
+    result = environment.reset(task_id=task_id, session_id=session_id)
     return result.model_dump()
 
 
