@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from env.models import IntersectionState, TaskConfig
+from env.models import IntersectionState
 
 
 def compute_reward(
@@ -10,28 +10,26 @@ def compute_reward(
     moved_ew: int,
     action_valid: bool,
 ) -> float:
-    moved_total = moved_ns + moved_ew
-    throughput_component = 0.08 * moved_total
+    if current_state.collision_detected:
+        return -1.0
 
-    wait_delta = current_state.total_wait_time - previous_state.total_wait_time
-    delay_component = -0.01 * wait_delta
+    if not action_valid:
+        return -0.8
 
-    emergency_delta = current_state.emergency_wait_time - previous_state.emergency_wait_time
-    emergency_component = -0.03 * emergency_delta
+    queue_prev = previous_state.queue_ns + previous_state.queue_ew
+    queue_curr = current_state.queue_ns + current_state.queue_ew
+    reduction_reward = (queue_prev - queue_curr) * 0.05
 
-    fairness_component = -0.2 * current_state.fairness_gap
+    stability_penalty = 0.0
+    if previous_state.current_phase != current_state.current_phase:
+        if current_state.emergency_ns <= 0 and current_state.emergency_ew <= 0:
+            stability_penalty = -0.3
 
-    invalid_component = -0.25 if not action_valid else 0.0
-    done_component = 0.0
-    if current_state.done:
-        done_component = 0.2
+    flow_reward = (moved_ns + moved_ew) * 0.1
+    emergency_wait_penalty = -0.2 * (current_state.emergency_wait_time - previous_state.emergency_wait_time)
 
-    reward = (
-        throughput_component
-        + delay_component
-        + emergency_component
-        + fairness_component
-        + invalid_component
-        + done_component
-    )
-    return float(max(-2.0, min(2.0, reward)))
+    total_reward = reduction_reward + stability_penalty + flow_reward + emergency_wait_penalty
+    if current_state.catastrophic_event:
+        total_reward = min(total_reward, -1.0)
+
+    return float(max(-1.0, min(1.0, total_reward)))
