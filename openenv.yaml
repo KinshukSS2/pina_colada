@@ -1,5 +1,5 @@
 name: traffic-control-openenv
-description: Deterministic traffic signal control environment with emergency handling and fairness-aware grading.
+description: Advanced deterministic traffic benchmark testing POMDP resilience, spatial reasoning, and dynamic constraints.
 entry_point: server.main:app
 
 actions:
@@ -17,6 +17,11 @@ observations:
   keys:
     - timestep
     - current_phase
+    - ascii_minimap
+    - sensor_status
+    - pedestrian_waiting
+    - action_mask
+    - green_duration
     - queue_ns
     - queue_ew
     - emergency_ns
@@ -28,4 +33,6 @@ tasks:
   - id: medium
     description: Directional rush-hour traffic with periodic emergency requests.
   - id: hard
-    description: Congested bidirectional flow with emergency contention and fairness constraints.
+    description: Congested bidirectional flow with emergency contention.
+  - id: chaos
+    description: Extreme stress test with simultaneous emergencies, platoons, and sensor blackouts.
