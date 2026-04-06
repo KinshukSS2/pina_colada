@@ -20,7 +20,17 @@ def root() -> dict:
     return {
         "service": "traffic-openenv",
         "status": "ok",
-        "endpoints": ["/reset", "/step", "/state"],
+        "endpoints": ["/reset", "/step", "/state", "/tasks"],
+    }
+
+
+@app.get("/tasks")
+def get_tasks() -> dict:
+    return {
+        "easy": {"has_grader": True},
+        "medium": {"has_grader": True},
+        "hard": {"has_grader": True},
+        "chaos": {"has_grader": True},
     }
 
 
