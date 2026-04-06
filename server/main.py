@@ -29,17 +29,34 @@ def reset(request: Optional[ResetRequest] = None) -> dict:
     if request is None:
         task_id = "easy"
         session_id = None
+        seed = None
+        sensor_noise = False
+        ood_start = False
     else:
         task_id = request.task_id
         session_id = request.session_id
+        seed = request.seed
+        sensor_noise = request.sensor_noise
+        ood_start = request.ood_start
 
-    result = environment.reset(task_id=task_id, session_id=session_id)
+    result = environment.reset(
+        task_id=task_id,
+        session_id=session_id,
+        seed=seed,
+        sensor_noise=sensor_noise,
+        ood_start=ood_start,
+    )
     return result.model_dump()
 
 
 @app.post("/step")
 def step(request: StepRequest) -> dict:
-    result = environment.step(session_id=request.session_id, action_text=request.action)
+    result = environment.step(
+        session_id=request.session_id,
+        action_text=request.action,
+        fallback_status=request.fallback_status or "unknown",
+        agent_reason=request.agent_reason,
+    )
     return result.model_dump()
 
 
