@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Dict, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from env.environment import TrafficControlEnvironment
-from env.models import ResetRequest, StateRequest, StepRequest
-from env.tasks import task_catalog
+from env.grader import compute_grade
+from env.models import EpisodeSummary, ResetRequest, StateRequest, StepRequest
+from env.tasks import get_task, task_catalog
 
 app = FastAPI(title="Traffic Control OpenEnv")
 environment = TrafficControlEnvironment()
@@ -23,7 +26,7 @@ def _task_summaries() -> list[dict]:
             "task_id": task.task_id,
             "difficulty": task.difficulty,
             "description": task.description,
-            "grader": True,
+            "grader": "env.grader:compute_grade",
             "has_grader": True,
         }
         for task in task_catalog().values()
@@ -35,19 +38,20 @@ def root() -> dict:
     return {
         "service": "traffic-openenv",
         "status": "ok",
-        "endpoints": ["/reset", "/step", "/state", "/tasks", "/health", "/metadata", "/schema"],
+        "endpoints": ["/reset", "/step", "/state", "/tasks", "/health", "/metadata", "/schema", "/mcp", "/grade"],
     }
 
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok"}
+    return {"status": "healthy"}
 
 
 @app.get("/metadata")
 def metadata() -> dict:
     return {
         "name": "traffic-control-openenv",
+        "description": "Advanced deterministic traffic benchmark testing POMDP resilience, spatial reasoning, and dynamic constraints.",
         "entry_point": "server.main:app",
         "tasks": _task_summaries(),
     }
@@ -56,13 +60,17 @@ def metadata() -> dict:
 @app.get("/schema")
 def schema() -> dict:
     return {
-        "actions": {
+        "action": {
             "type": "text",
             "grammar": ["hold", "switch", "prioritize_emergency", "set_ns_green:<n>", "set_ew_green:<n>"],
         },
-        "observations": {
+        "observation": {
             "type": "json",
             "schema": "Observation",
+        },
+        "state": {
+            "type": "json",
+            "schema": "IntersectionState",
         },
         "tasks": _task_summaries(),
     }
@@ -115,7 +123,53 @@ def state(request: StateRequest) -> dict:
     return result.model_dump()
 
 
+class GradeRequest(BaseModel):
+    task_id: str
+    summary: Dict[str, Any]
+
+
+@app.post("/grade")
+def grade(request: GradeRequest) -> dict:
+    """Run the grader for a given task and episode summary."""
+    task = get_task(request.task_id)
+    summary = EpisodeSummary(**request.summary)
+    result = compute_grade(summary, task)
+    return {
+        "score": result.score,
+        "breakdown": result.breakdown,
+        "reasons": result.reasons,
+    }
+
+
+@app.post("/mcp")
+async def mcp_endpoint(request: Request) -> JSONResponse:
+    """Minimal MCP JSON-RPC 2.0 endpoint for openenv runtime validation."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    request_id = body.get("id", 1) if isinstance(body, dict) else 1
+    method = body.get("method", "") if isinstance(body, dict) else ""
+
+    if method == "tools/list":
+        return JSONResponse({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {"tools": []},
+        })
+
+    # Default: return a valid JSON-RPC 2.0 response for any request
+    # (including empty body from the validator ping)
+    return JSONResponse({
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "result": {"tools": []},
+    })
+
+
 if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("server.main:app", host=HOST, port=PORT, reload=False)
+

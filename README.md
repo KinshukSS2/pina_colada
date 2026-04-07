@@ -61,6 +61,7 @@ After applying task rebalancing and throughput-lock policy, benchmark runs reach
 | **Easy** | 50 / 50 | 0.632426 | SURVIVED |
 | **Medium** | 60 / 60 | 0.711217 | SURVIVED |
 | **Hard** | 70 / 70 | 0.857898 | SURVIVED |
+| **Chaos** | 75 / 75 | — | Extreme stress test (baseline pending) |
 
 ## Action Space
 

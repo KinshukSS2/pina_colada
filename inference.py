@@ -23,7 +23,9 @@ MODEL_CANDIDATES = os.getenv(
     "MODEL_CANDIDATES",
     "openai/gpt-4o-mini,openai/gpt-4.1-mini,openai/gpt-4o",
 )
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("HF_TOKEN")
+HF_TOKEN = os.getenv("HF_TOKEN", "")
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME", "traffic-control-openenv")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("GEMINI_API_KEY") or HF_TOKEN
 LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "20"))
 OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "1"))
 DISABLE_LLM = os.getenv("DISABLE_LLM", "0").strip().lower() in {"1", "true", "yes", "on"}
@@ -36,6 +38,7 @@ TRACE_API = os.getenv("TRACE_API", "0").strip().lower() in {"1", "true", "yes", 
 TRACE_DIR = os.getenv("TRACE_DIR", "/tmp")
 TRACE_BASENAME = os.getenv("TRACE_BASENAME", "inference_trace")
 VERIFY_STRICT = os.getenv("VERIFY_STRICT", "0").strip().lower() in {"1", "true", "yes", "on"}
+ENV_NAME = "traffic-control-openenv"
 VERIFY_MIN_SUCCESSFUL_LLM_CALLS = int(os.getenv("VERIFY_MIN_SUCCESSFUL_LLM_CALLS", "1"))
 
 EXTRA_HEADERS = {
@@ -124,7 +127,7 @@ def _llm_action(
         ],
     )
     content = completion.choices[0].message.content if completion.choices else ""
-    print(f"[DEBUG LLM RAW] {content}")
+    print(f"[DEBUG LLM RAW] {content}", file=sys.stderr)
     raw_text = content or ""
     parsed_action = _extract_action(raw_text)
     usage = getattr(completion, "usage", None)
@@ -180,24 +183,43 @@ def _extract_action(text: str) -> str:
 
 
 def _get_smart_fallback(observation: Dict[str, Any]) -> str:
-    """
-    Dumbed-down fallback: Only save from instant-death, do NOT optimize traffic.
-    Leave the queue management entirely to the LLM.
-    """
+    """Choose the safest valid action while avoiding queue deadlock."""
     action_mask = observation.get("action_mask", {})
     if not isinstance(action_mask, dict):
         return "hold"
 
+    def _allowed(*keys: str) -> bool:
+        return any(bool(action_mask.get(key, False)) for key in keys)
+
     # 1. Priority 0: Save from Pedestrian Death
-    if bool(observation.get("pedestrian_waiting", False)) and action_mask.get("switch", False):
+    if bool(observation.get("pedestrian_waiting", False)) and _allowed("switch"):
         return "switch"
 
     # 2. Priority 1: Save from Emergency Death
     emergency_total = _to_int(observation.get("emergency_ns", 0)) + _to_int(observation.get("emergency_ew", 0))
-    if emergency_total > 0 and action_mask.get("prioritize_emergency", False):
+    if emergency_total > 0 and _allowed("prioritize_emergency"):
         return "prioritize_emergency"
 
-    # 3. DO NOTHING ELSE. No queue-based switching. Default to hold.
+    queue_ns = max(0, _to_int(observation.get("queue_ns", 0)))
+    queue_ew = max(0, _to_int(observation.get("queue_ew", 0)))
+    current_phase = str(observation.get("current_phase", "ns"))
+
+    if _allowed("set_ns_green") and _allowed("set_ew_green"):
+        return "set_ns_green:10" if queue_ns >= queue_ew else "set_ew_green:10"
+    if _allowed("set_ns_green"):
+        return "set_ns_green:10"
+    if _allowed("set_ew_green"):
+        return "set_ew_green:10"
+
+    if _allowed("switch"):
+        if current_phase == "ns" and queue_ew > queue_ns:
+            return "switch"
+        if current_phase == "ew" and queue_ns > queue_ew:
+            return "switch"
+        if abs(queue_ns - queue_ew) >= 3:
+            return "switch"
+
+    # 3. If no better valid action exists, hold.
     return "hold"
 
 
@@ -260,6 +282,37 @@ def _policy_override_action(observation: Dict[str, Any], previous_action: str | 
     return None, None
 
 
+def _anti_stall_action(observation: Dict[str, Any], current_action: str) -> tuple[str, str | None]:
+    if current_action != "hold":
+        return current_action, None
+
+    action_mask = observation.get("action_mask", {})
+    if not isinstance(action_mask, dict):
+        return current_action, None
+
+    if bool(observation.get("yellow_active", False)):
+        return current_action, None
+    if bool(observation.get("pedestrian_waiting", False)):
+        return current_action, None
+    if not bool(action_mask.get("switch", False)):
+        return current_action, None
+
+    queue_ns = max(0, _to_int(observation.get("queue_ns", 0)))
+    queue_ew = max(0, _to_int(observation.get("queue_ew", 0)))
+    current_phase = str(observation.get("current_phase", "ns"))
+
+    should_switch = False
+    if current_phase == "ns":
+        should_switch = (queue_ns == 0 and queue_ew > 0) or (queue_ew > queue_ns + 4)
+    elif current_phase == "ew":
+        should_switch = (queue_ew == 0 and queue_ns > 0) or (queue_ns > queue_ew + 4)
+
+    if should_switch:
+        return "switch", "anti_stall_queue_rebalance"
+
+    return current_action, None
+
+
 def run_episode(task_id: str = "easy") -> int:
     if not OPENAI_API_KEY and not DISABLE_LLM:
         raise RuntimeError("OPENAI_API_KEY must be set")
@@ -277,7 +330,7 @@ def run_episode(task_id: str = "easy") -> int:
 
     observation = reset_result["observation"]
     session_id = observation["session_id"]
-    print(f"[START] session={session_id} task={observation['task_id']}")
+    print(f"[START] task={observation['task_id']} env={ENV_NAME} model={MODEL_NAME}")
 
     run_id = f"run-{int(time.time())}-{uuid.uuid4().hex[:10]}"
     trace_path = os.path.join(TRACE_DIR, f"{TRACE_BASENAME}_{run_id}.jsonl")
@@ -289,9 +342,11 @@ def run_episode(task_id: str = "easy") -> int:
     llm_enabled = not DISABLE_LLM
     forced_termination_reason: str | None = None
     last_actions: list[str] = []
+    all_rewards: list[float] = []
     recent_rewards: list[float] = []
     recent_queue_totals: list[int] = []
     repeated_warning_action: str | None = None
+    last_step_error: str | None = None
     final_info: Dict[str, Any] = reset_result.get("info", {})
     required_steps_by_task = {
         "easy": 50,
@@ -363,7 +418,7 @@ def run_episode(task_id: str = "easy") -> int:
                     if llm_trace.get("nonce_seen"):
                         nonce_verified_steps += 1
                 except Exception as exc:
-                    print(f"[WARN] LLM action failed at step={step_index}: {exc}")
+                    print(f"[WARN] LLM action failed at step={step_index}: {exc}", file=sys.stderr)
                     llm_trace["error"] = str(exc)
                     llm_trace["fallback_status"] = "yes"
                     llm_trace["reason"] = f"llm_error:{exc.__class__.__name__}"
@@ -372,11 +427,12 @@ def run_episode(task_id: str = "easy") -> int:
                         if active_model_index + 1 < len(model_candidates):
                             active_model_index += 1
                             print(
-                                f"[WARN] Switching model to {model_candidates[active_model_index]} and continuing"
+                                f"[WARN] Switching model to {model_candidates[active_model_index]} and continuing",
+                                file=sys.stderr,
                             )
                         else:
                             llm_enabled = False
-                            print("[WARN] Disabling LLM calls for remaining steps; using safe fallback action")
+                            print("[WARN] Disabling LLM calls for remaining steps; using safe fallback action", file=sys.stderr)
                     action = _get_smart_fallback(observation)
                     used_fallback_action = True
         else:
@@ -399,12 +455,14 @@ def run_episode(task_id: str = "easy") -> int:
 
         previous_action = last_actions[-1] if last_actions else None
 
-        raw_action_text = str(llm_trace.get("raw_response") or action)
-        parsed_action = _extract_action(raw_action_text)
-        action = _sanitize_action(raw_action_text, observation)
+        raw_action_text = str(llm_trace.get("raw_response") or "")
+        model_action_text = str(llm_trace.get("action") or action)
+        parsed_action = _extract_action(model_action_text)
+        action = _sanitize_action(model_action_text, observation)
         policy_action, policy_reason = _policy_override_action(observation, previous_action)
         if policy_action is not None:
             action = _sanitize_action(policy_action, observation)
+        action, anti_stall_reason = _anti_stall_action(observation, action)
         if parsed_action != action:
             sanitized_steps += 1
         if used_fallback_action or (parsed_action != action and action == SAFE_FALLBACK):
@@ -420,6 +478,10 @@ def run_episode(task_id: str = "easy") -> int:
         agent_reason = str(llm_trace.get("reason") or "")
         if policy_action is not None and policy_reason:
             agent_reason = policy_reason
+            if fallback_status == "yes":
+                fallback_status = "no"
+        elif anti_stall_reason:
+            agent_reason = anti_stall_reason
             if fallback_status == "yes":
                 fallback_status = "no"
         elif parsed_action != action:
@@ -468,7 +530,7 @@ def run_episode(task_id: str = "easy") -> int:
                 },
             )
         except Exception as exc:
-            print(f"[WARN] /step failed for action={action}: {exc}; retrying with fallback")
+            print(f"[WARN] /step failed for action={action}: {exc}; retrying with fallback", file=sys.stderr)
             try:
                 fallback_action = _get_smart_fallback(observation)
                 result = _post(
@@ -483,7 +545,7 @@ def run_episode(task_id: str = "easy") -> int:
                 action = fallback_action
             except Exception as fallback_exc:
                 forced_termination_reason = f"step_api_failure: {fallback_exc}"
-                print(f"[WARN] {forced_termination_reason}")
+                print(f"[WARN] {forced_termination_reason}", file=sys.stderr)
                 break
 
         observation = result["observation"]
@@ -491,11 +553,13 @@ def run_episode(task_id: str = "easy") -> int:
         done = bool(result.get("done", False))
         catastrophic_event = bool(observation.get("catastrophic_event", False))
         final_info = result.get("info", {})
+        last_step_error = final_info.get("reason") if not final_info.get("action_valid", True) else None
 
         last_actions.append(action)
         if len(last_actions) > REPEAT_ACTION_LIMIT:
             last_actions.pop(0)
 
+        all_rewards.append(reward)
         recent_rewards.append(reward)
         if len(recent_rewards) > NO_PROGRESS_WINDOW:
             recent_rewards.pop(0)
@@ -505,7 +569,9 @@ def run_episode(task_id: str = "easy") -> int:
         if len(recent_queue_totals) > NO_PROGRESS_WINDOW:
             recent_queue_totals.pop(0)
 
-        print(f"[STEP] t={step_index} action={action} reward={reward:.4f} done={done}")
+        done_str = "true" if done else "false"
+        error_str = last_step_error if last_step_error else "null"
+        print(f"[STEP] step={step_index} action={action} reward={reward:.2f} done={done_str} error={error_str}")
         steps_taken += 1
 
         if done:
@@ -558,7 +624,7 @@ def run_episode(task_id: str = "easy") -> int:
 
         if repeated_action_warning:
             if repeated_warning_action != last_actions[-1]:
-                print(f"[WARN] repeated_action_warning:{last_actions[-1]} streak={REPEAT_WARN_LIMIT}")
+                print(f"[WARN] repeated_action_warning:{last_actions[-1]} streak={REPEAT_WARN_LIMIT}", file=sys.stderr)
                 repeated_warning_action = last_actions[-1]
         else:
             repeated_warning_action = None
@@ -566,17 +632,17 @@ def run_episode(task_id: str = "easy") -> int:
         if steps_taken >= required_min_steps:
             if repeated_action_loop and (queue_stalled or reward_flat or moved_stalled):
                 forced_termination_reason = f"repeated_action_loop:{last_actions[-1]}"
-                print(f"[WARN] {forced_termination_reason}; forcing termination")
+                print(f"[WARN] {forced_termination_reason}; forcing termination", file=sys.stderr)
                 break
 
             if reward_flat and queue_stalled:
                 forced_termination_reason = "no_progress_detected"
-                print("[WARN] no_progress_detected; forcing termination")
+                print("[WARN] no_progress_detected; forcing termination", file=sys.stderr)
                 break
 
     if not done and forced_termination_reason is None and steps_taken >= effective_max_steps:
         forced_termination_reason = "max_steps_reached"
-        print("[WARN] Reached max steps. Forcing termination.")
+        print("[WARN] Reached max steps. Forcing termination.", file=sys.stderr)
 
     if forced_termination_reason is not None:
         try:
@@ -584,7 +650,7 @@ def run_episode(task_id: str = "easy") -> int:
             final_info = state_result.get("info", final_info)
             done = bool(state_result.get("done", done))
         except Exception as exc:
-            print(f"[WARN] Failed to fetch final state after forced termination: {exc}")
+            print(f"[WARN] Failed to fetch final state after forced termination: {exc}", file=sys.stderr)
 
     score = float(final_info.get("score_estimate", 0.0))
     proof_summary = {
@@ -625,29 +691,39 @@ def run_episode(task_id: str = "easy") -> int:
     print(
         "[PROOF] "
         f"run_id={run_id} llm_attempted={llm_calls_attempted} llm_succeeded={llm_calls_succeeded} "
-        f"nonce_verified={nonce_verified_steps} fallback_steps={fallback_steps} sanitized_steps={sanitized_steps}"
+        f"nonce_verified={nonce_verified_steps} fallback_steps={fallback_steps} sanitized_steps={sanitized_steps}",
+        file=sys.stderr,
     )
 
-    death_reason_value = catastrophic_reason or forced_termination_reason
-    death_tag = f" DEATH_REASON={death_reason_value}" if death_reason_value else " SURVIVED"
-    print(f"[END] session={session_id} score={score:.6f} steps={steps_taken}{death_tag}")
+    success = score > 0.0 and not bool(observation.get("catastrophic_event", False))
+    success_str = "true" if success else "false"
+    rewards_str = ",".join(f"{r:.2f}" for r in all_rewards)
+    print(f"[END] success={success_str} steps={steps_taken} rewards={rewards_str}")
 
     if VERIFY_STRICT:
         if llm_calls_succeeded < VERIFY_MIN_SUCCESSFUL_LLM_CALLS:
-            print("[FAIL] strict verification failed: insufficient successful LLM calls")
+            print("[FAIL] strict verification failed: insufficient successful LLM calls", file=sys.stderr)
             return 2
         if llm_calls_attempted > 0 and fallback_steps >= steps_taken and not DISABLE_LLM:
-            print("[FAIL] strict verification failed: run used fallback for all steps")
+            print("[FAIL] strict verification failed: run used fallback for all steps", file=sys.stderr)
             return 3
         if TRACE_API and nonce_verified_steps <= 0:
-            print("[FAIL] strict verification failed: nonce not observed in LLM responses")
+            print("[FAIL] strict verification failed: nonce not observed in LLM responses", file=sys.stderr)
             return 4
 
     return 0
 
 
 if __name__ == "__main__":
-    chosen_task = "easy"
     if len(sys.argv) > 1:
         chosen_task = sys.argv[1].strip().lower()
-    raise SystemExit(run_episode(task_id=chosen_task))
+        raise SystemExit(run_episode(task_id=chosen_task))
+    else:
+        # Run all tasks sequentially when no argument is given
+        all_tasks = ["easy", "medium", "hard"]
+        exit_code = 0
+        for task in all_tasks:
+            result = run_episode(task_id=task)
+            if result != 0:
+                exit_code = result
+        raise SystemExit(exit_code)
