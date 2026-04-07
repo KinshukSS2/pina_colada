@@ -29,18 +29,10 @@ observations:
 
 tasks:
   - id: easy
-    description: Balanced daytime traffic with low emergency pressure.
-    grader: true
     has_grader: true
   - id: medium
-    description: Directional rush-hour traffic with periodic emergency requests.
-    grader: true
     has_grader: true
   - id: hard
-    description: Congested bidirectional flow with emergency contention.
-    grader: true
     has_grader: true
   - id: chaos
-    description: Extreme stress test with simultaneous emergencies, platoons, and sensor blackouts.
-    grader: true
     has_grader: true

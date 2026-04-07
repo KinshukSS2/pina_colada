@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from env.environment import TrafficControlEnvironment
 from env.models import ResetRequest, StateRequest, StepRequest
+from env.tasks import task_catalog
 
 app = FastAPI(title="Traffic Control OpenEnv")
 environment = TrafficControlEnvironment()
@@ -25,19 +26,8 @@ def root() -> dict:
 
 
 @app.get("/tasks")
-def get_tasks() -> dict:
-    return {
-        "tasks": [
-            {"id": "easy", "grader": True, "has_grader": True},
-            {"id": "medium", "grader": True, "has_grader": True},
-            {"id": "hard", "grader": True, "has_grader": True},
-            {"id": "chaos", "grader": True, "has_grader": True},
-        ],
-        "easy": {"has_grader": True},
-        "medium": {"has_grader": True},
-        "hard": {"has_grader": True},
-        "chaos": {"has_grader": True},
-    }
+def get_tasks() -> list[dict]:
+    return [task.model_dump() for task in task_catalog().values()]
 
 
 @app.post("/reset")

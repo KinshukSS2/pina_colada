@@ -141,6 +141,7 @@ class TaskConfig(BaseModel):
     arrivals_ew: List[int]
     emergency_ns_steps: List[int]
     emergency_ew_steps: List[int]
+    has_grader: bool = True
 
 
 class EpisodeSummary(BaseModel):
