@@ -1,12 +1,13 @@
 from __future__ import annotations
+import math
 
 from env.models import IntersectionState
 
 _EPS = 0.01
 
 def _clip_reward(value: float) -> float:
+    """Ensures the reward never exactly hits 0.0 or 1.0."""
     return max(_EPS, min(1.0 - _EPS, float(value)))
-
 
 def compute_reward(
     previous_state: IntersectionState,
@@ -15,29 +16,43 @@ def compute_reward(
     moved_ew: int,
     action_valid: bool,
 ) -> float:
-    if current_state.collision_detected:
-        return _EPS
-
-    if not action_valid:
-        return 0.10
-
-    queue_prev = previous_state.queue_ns + previous_state.queue_ew
-    queue_curr = current_state.queue_ns + current_state.queue_ew
-    reduction_reward = (queue_prev - queue_curr) * 0.05
-
+    # 1. Continuous Components
+    # Reward for moving vehicles (throughput)
+    flow_reward = (moved_ns + moved_ew) * 0.1
+    
+    # Penalty for unnecessary phase changes (stability)
     stability_penalty = 0.0
     if previous_state.current_phase != current_state.current_phase:
         if current_state.emergency_ns <= 0 and current_state.emergency_ew <= 0:
             stability_penalty = -0.3
 
-    flow_reward = (moved_ns + moved_ew) * 0.1
-    emergency_wait_penalty = -0.2 * (current_state.emergency_wait_time - previous_state.emergency_wait_time)
+    # Penalty for increasing emergency vehicle wait times
+    emergency_wait_penalty = -0.2 * (
+        current_state.emergency_wait_time - previous_state.emergency_wait_time
+    )
 
-    total_reward = reduction_reward + stability_penalty + flow_reward + emergency_wait_penalty
+    # Base raw reward
+    total_raw_reward = flow_reward + stability_penalty + emergency_wait_penalty
+
+    # 2. Discrete Failure Penalties
+    # Instead of early returns, subtract heavily from the raw reward.
+    # This prevents the scaling logic bugs from the previous version.
+    if current_state.collision_detected:
+        total_raw_reward -= 10.0
+        
     if current_state.catastrophic_event:
-        total_reward = min(total_reward, _EPS)
+        total_raw_reward -= 5.0
+        
+    if not action_valid:
+        total_raw_reward -= 1.0
 
-    # Shift negative rewards to be safely within the (0, 1) interval.
-    # Linear scale from [-1.0, 1.0] -> [0.01, 0.99] to preserve relative signal.
-    scaled_reward = _EPS + ((total_reward + 1.0) / 2.0) * (1.0 - 2 * _EPS)
-    return _clip_reward(scaled_reward)
+    # 3. Squashing
+    # math.tanh(x) smoothly maps (-inf, inf) to (-1, 1).
+    # Adding 1 and dividing by 2 maps it smoothly to (0, 1).
+    # This preserves the gradient so the agent still knows a "good" move 
+    # is better than an "okay" move, even at the high end of the scale.
+    squashed_reward = (math.tanh(total_raw_reward) + 1.0) / 2.0
+
+    # 4. Final Clip
+    # Guarantee the values are safely inside the [0.01, 0.99] interval.
+    return _clip_reward(squashed_reward)
