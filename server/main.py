@@ -27,6 +27,12 @@ def root() -> dict:
 @app.get("/tasks")
 def get_tasks() -> dict:
     return {
+        "tasks": [
+            {"id": "easy", "grader": True, "has_grader": True},
+            {"id": "medium", "grader": True, "has_grader": True},
+            {"id": "hard", "grader": True, "has_grader": True},
+            {"id": "chaos", "grader": True, "has_grader": True},
+        ],
         "easy": {"has_grader": True},
         "medium": {"has_grader": True},
         "hard": {"has_grader": True},
