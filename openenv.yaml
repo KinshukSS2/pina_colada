@@ -29,10 +29,14 @@ observations:
 
 tasks:
   - id: easy
+    grader: env.grader:compute_grade
     has_grader: true
   - id: medium
+    grader: env.grader:compute_grade
     has_grader: true
   - id: hard
+    grader: env.grader:compute_grade
     has_grader: true
   - id: chaos
+    grader: env.grader:compute_grade
     has_grader: true

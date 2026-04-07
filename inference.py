@@ -10,6 +10,10 @@ from typing import Any, Dict
 
 import requests
 from openai import OpenAI
+from dotenv import load_dotenv
+
+
+load_dotenv()
 
 
 ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://127.0.0.1:7860")

@@ -19,6 +19,8 @@ The core contribution is mathematical profiling and rebalancing of the baseline 
 
 ## Architecture Overview
 
+## Environment Description
+
 The system simulates a single urban intersection under congestion, emergency pressure, and fairness constraints. It combines:
 
 - deterministic environment dynamics and task builders (`easy`, `medium`, `hard`, `chaos`)
@@ -157,6 +159,17 @@ All terms are normalized, then clamped to `[0, 1]`. If a catastrophic safety eve
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+```
+
+Optional `.env` support (auto-loaded by `inference.py`, `validate_submission.py`, and `verify_live_api.py`):
+
+```bash
+cat > .env << 'EOF'
+ENV_BASE_URL=http://127.0.0.1:7860
+API_BASE_URL=https://openrouter.ai/api/v1
+MODEL_NAME=openai/gpt-4o-mini
+OPENAI_API_KEY=<YOUR_OPENROUTER_KEY>
+EOF
 ```
 
 ### Run server
