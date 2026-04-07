@@ -330,7 +330,9 @@ def run_episode(task_id: str = "easy") -> int:
 
     observation = reset_result["observation"]
     session_id = observation["session_id"]
-    print(f"[START] task={observation['task_id']} env={ENV_NAME} model={MODEL_NAME}")
+    
+    # STDOUT: [START] line
+    print(f"[START] task={task_id} env={ENV_NAME} model={MODEL_NAME}")
 
     run_id = f"run-{int(time.time())}-{uuid.uuid4().hex[:10]}"
     trace_path = os.path.join(TRACE_DIR, f"{TRACE_BASENAME}_{run_id}.jsonl")
@@ -377,282 +379,291 @@ def run_episode(task_id: str = "easy") -> int:
             },
         )
 
-    for step_index in range(effective_max_steps):
-        if done:
-            catastrophic_event = bool(observation.get("catastrophic_event", False))
-            if catastrophic_event or steps_taken >= required_min_steps:
-                break
-            done = False
+    try:
+        for step_index in range(effective_max_steps):
+            if done:
+                catastrophic_event = bool(observation.get("catastrophic_event", False))
+                if catastrophic_event or steps_taken >= required_min_steps:
+                    break
+                done = False
 
-        used_fallback_action = False
+            used_fallback_action = False
 
-        if llm_enabled:
-            llm_calls_attempted += 1
-            llm_trace: Dict[str, Any] = {
-                "action": SAFE_FALLBACK,
-                "nonce": None,
-                "raw_response": "",
-                "nonce_seen": False,
-                "response_id": None,
-                "response_model": model_candidates[active_model_index],
-                "usage_prompt_tokens": None,
-                "usage_completion_tokens": None,
-                "usage_total_tokens": None,
-                "error": None,
-                "fallback_status": "unknown",
-                "reason": None,
-            }
-            if client is None:
-                llm_trace["error"] = "client_uninitialized"
-                llm_trace["fallback_status"] = "yes"
-                llm_trace["reason"] = "client_uninitialized"
-                action = _get_smart_fallback(observation)
-                used_fallback_action = True
-                llm_enabled = False
-            else:
-                try:
-                    current_model = model_candidates[active_model_index]
-                    llm_trace = _llm_action(client, observation, current_model, run_id, step_index)
-                    action = llm_trace["action"]
-                    llm_calls_succeeded += 1
-                    if llm_trace.get("nonce_seen"):
-                        nonce_verified_steps += 1
-                except Exception as exc:
-                    print(f"[WARN] LLM action failed at step={step_index}: {exc}", file=sys.stderr)
-                    llm_trace["error"] = str(exc)
+            if llm_enabled:
+                llm_calls_attempted += 1
+                llm_trace: Dict[str, Any] = {
+                    "action": SAFE_FALLBACK,
+                    "nonce": None,
+                    "raw_response": "",
+                    "nonce_seen": False,
+                    "response_id": None,
+                    "response_model": model_candidates[active_model_index],
+                    "usage_prompt_tokens": None,
+                    "usage_completion_tokens": None,
+                    "usage_total_tokens": None,
+                    "error": None,
+                    "fallback_status": "unknown",
+                    "reason": None,
+                }
+                if client is None:
+                    llm_trace["error"] = "client_uninitialized"
                     llm_trace["fallback_status"] = "yes"
-                    llm_trace["reason"] = f"llm_error:{exc.__class__.__name__}"
-                    message = str(exc).lower()
-                    if "404" in message or "429" in message:
-                        if active_model_index + 1 < len(model_candidates):
-                            active_model_index += 1
-                            print(
-                                f"[WARN] Switching model to {model_candidates[active_model_index]} and continuing",
-                                file=sys.stderr,
-                            )
-                        else:
-                            llm_enabled = False
-                            print("[WARN] Disabling LLM calls for remaining steps; using safe fallback action", file=sys.stderr)
+                    llm_trace["reason"] = "client_uninitialized"
                     action = _get_smart_fallback(observation)
                     used_fallback_action = True
-        else:
-            action = _get_smart_fallback(observation)
-            used_fallback_action = True
-            llm_trace = {
-                "action": SAFE_FALLBACK,
-                "nonce": None,
-                "raw_response": "",
-                "nonce_seen": False,
-                "response_id": None,
-                "response_model": None,
-                "usage_prompt_tokens": None,
-                "usage_completion_tokens": None,
-                "usage_total_tokens": None,
-                "error": "llm_disabled",
-                "fallback_status": "yes",
-                "reason": "llm_disabled",
-            }
+                    llm_enabled = False
+                else:
+                    try:
+                        current_model = model_candidates[active_model_index]
+                        llm_trace = _llm_action(client, observation, current_model, run_id, step_index)
+                        action = llm_trace["action"]
+                        llm_calls_succeeded += 1
+                        if llm_trace.get("nonce_seen"):
+                            nonce_verified_steps += 1
+                    except Exception as exc:
+                        print(f"[WARN] LLM action failed at step={step_index}: {exc}", file=sys.stderr)
+                        llm_trace["error"] = str(exc)
+                        llm_trace["fallback_status"] = "yes"
+                        llm_trace["reason"] = f"llm_error:{exc.__class__.__name__}"
+                        message = str(exc).lower()
+                        if "404" in message or "429" in message:
+                            if active_model_index + 1 < len(model_candidates):
+                                active_model_index += 1
+                                print(
+                                    f"[WARN] Switching model to {model_candidates[active_model_index]} and continuing",
+                                    file=sys.stderr,
+                                )
+                            else:
+                                llm_enabled = False
+                                print("[WARN] Disabling LLM calls for remaining steps; using safe fallback action", file=sys.stderr)
+                        action = _get_smart_fallback(observation)
+                        used_fallback_action = True
+            else:
+                action = _get_smart_fallback(observation)
+                used_fallback_action = True
+                llm_trace = {
+                    "action": SAFE_FALLBACK,
+                    "nonce": None,
+                    "raw_response": "",
+                    "nonce_seen": False,
+                    "response_id": None,
+                    "response_model": None,
+                    "usage_prompt_tokens": None,
+                    "usage_completion_tokens": None,
+                    "usage_total_tokens": None,
+                    "error": "llm_disabled",
+                    "fallback_status": "yes",
+                    "reason": "llm_disabled",
+                }
 
-        previous_action = last_actions[-1] if last_actions else None
+            previous_action = last_actions[-1] if last_actions else None
 
-        raw_action_text = str(llm_trace.get("raw_response") or "")
-        model_action_text = str(llm_trace.get("action") or action)
-        parsed_action = _extract_action(model_action_text)
-        action = _sanitize_action(model_action_text, observation)
-        policy_action, policy_reason = _policy_override_action(observation, previous_action)
-        if policy_action is not None:
-            action = _sanitize_action(policy_action, observation)
-        action, anti_stall_reason = _anti_stall_action(observation, action)
-        if parsed_action != action:
-            sanitized_steps += 1
-        if used_fallback_action or (parsed_action != action and action == SAFE_FALLBACK):
-            fallback_steps += 1
+            raw_action_text = str(llm_trace.get("raw_response") or "")
+            model_action_text = str(llm_trace.get("action") or action)
+            parsed_action = _extract_action(model_action_text)
+            action = _sanitize_action(model_action_text, observation)
+            policy_action, policy_reason = _policy_override_action(observation, previous_action)
+            if policy_action is not None:
+                action = _sanitize_action(policy_action, observation)
+            action, anti_stall_reason = _anti_stall_action(observation, action)
+            if parsed_action != action:
+                sanitized_steps += 1
+            if used_fallback_action or (parsed_action != action and action == SAFE_FALLBACK):
+                fallback_steps += 1
 
-        fallback_status = str(llm_trace.get("fallback_status") or "unknown")
-        if used_fallback_action:
-            fallback_status = "yes"
-        elif fallback_status not in {"yes", "no", "unknown"}:
-            fallback_status = "unknown"
-        if action == SAFE_FALLBACK and fallback_status == "no":
-            fallback_status = "unknown"
-        agent_reason = str(llm_trace.get("reason") or "")
-        if policy_action is not None and policy_reason:
-            agent_reason = policy_reason
-            if fallback_status == "yes":
-                fallback_status = "no"
-        elif anti_stall_reason:
-            agent_reason = anti_stall_reason
-            if fallback_status == "yes":
-                fallback_status = "no"
-        elif parsed_action != action:
-            agent_reason = f"sanitized:{parsed_action}->{action}"
-        elif not agent_reason:
-            agent_reason = "action_forwarded"
+            fallback_status = str(llm_trace.get("fallback_status") or "unknown")
+            if used_fallback_action:
+                fallback_status = "yes"
+            elif fallback_status not in {"yes", "no", "unknown"}:
+                fallback_status = "unknown"
+            if action == SAFE_FALLBACK and fallback_status == "no":
+                fallback_status = "unknown"
+            agent_reason = str(llm_trace.get("reason") or "")
+            if policy_action is not None and policy_reason:
+                agent_reason = policy_reason
+                if fallback_status == "yes":
+                    fallback_status = "no"
+            elif anti_stall_reason:
+                agent_reason = anti_stall_reason
+                if fallback_status == "yes":
+                    fallback_status = "no"
+            elif parsed_action != action:
+                agent_reason = f"sanitized:{parsed_action}->{action}"
+            elif not agent_reason:
+                agent_reason = "action_forwarded"
 
-        if TRACE_API:
-            _append_trace(
-                trace_path,
-                {
-                    "event": "llm_step",
-                    "run_id": run_id,
-                    "step": step_index,
-                    "model": llm_trace.get("response_model"),
-                    "nonce": llm_trace.get("nonce"),
-                    "nonce_seen": llm_trace.get("nonce_seen"),
-                    "response_id": llm_trace.get("response_id"),
-                    "raw_response": llm_trace.get("raw_response"),
-                    "parsed_action": parsed_action,
-                    "sanitized_action": action,
-                    "used_fallback": action == SAFE_FALLBACK,
-                    "llm_error": llm_trace.get("error"),
-                    "usage_prompt_tokens": llm_trace.get("usage_prompt_tokens"),
-                    "usage_completion_tokens": llm_trace.get("usage_completion_tokens"),
-                    "usage_total_tokens": llm_trace.get("usage_total_tokens"),
-                    "observation": {
-                        "queue_ns": _to_int(observation.get("queue_ns")),
-                        "queue_ew": _to_int(observation.get("queue_ew")),
-                        "emergency_ns": _to_int(observation.get("emergency_ns")),
-                        "emergency_ew": _to_int(observation.get("emergency_ew")),
-                        "phase": observation.get("current_phase"),
-                        "phase_remaining": _to_int(observation.get("phase_remaining")),
+            if TRACE_API:
+                _append_trace(
+                    trace_path,
+                    {
+                        "event": "llm_step",
+                        "run_id": run_id,
+                        "step": step_index,
+                        "model": llm_trace.get("response_model"),
+                        "nonce": llm_trace.get("nonce"),
+                        "nonce_seen": llm_trace.get("nonce_seen"),
+                        "response_id": llm_trace.get("response_id"),
+                        "raw_response": llm_trace.get("raw_response"),
+                        "parsed_action": parsed_action,
+                        "sanitized_action": action,
+                        "used_fallback": action == SAFE_FALLBACK,
+                        "llm_error": llm_trace.get("error"),
+                        "usage_prompt_tokens": llm_trace.get("usage_prompt_tokens"),
+                        "usage_completion_tokens": llm_trace.get("usage_completion_tokens"),
+                        "usage_total_tokens": llm_trace.get("usage_total_tokens"),
+                        "observation": {
+                            "queue_ns": _to_int(observation.get("queue_ns")),
+                            "queue_ew": _to_int(observation.get("queue_ew")),
+                            "emergency_ns": _to_int(observation.get("emergency_ns")),
+                            "emergency_ew": _to_int(observation.get("emergency_ew")),
+                            "phase": observation.get("current_phase"),
+                            "phase_remaining": _to_int(observation.get("phase_remaining")),
+                        },
                     },
-                },
-            )
+                )
 
-        try:
-            result = _post(
-                "/step",
-                {
-                    "session_id": session_id,
-                    "action": action,
-                    "fallback_status": fallback_status,
-                    "agent_reason": agent_reason,
-                },
-            )
-        except Exception as exc:
-            print(f"[WARN] /step failed for action={action}: {exc}; retrying with fallback", file=sys.stderr)
             try:
-                fallback_action = _get_smart_fallback(observation)
                 result = _post(
                     "/step",
                     {
                         "session_id": session_id,
-                        "action": fallback_action,
-                        "fallback_status": "yes",
-                        "agent_reason": "step_retry_fallback",
+                        "action": action,
+                        "fallback_status": fallback_status,
+                        "agent_reason": agent_reason,
                     },
                 )
-                action = fallback_action
-            except Exception as fallback_exc:
-                forced_termination_reason = f"step_api_failure: {fallback_exc}"
-                print(f"[WARN] {forced_termination_reason}", file=sys.stderr)
-                break
+            except Exception as exc:
+                print(f"[WARN] /step failed for action={action}: {exc}; retrying with fallback", file=sys.stderr)
+                try:
+                    fallback_action = _get_smart_fallback(observation)
+                    result = _post(
+                        "/step",
+                        {
+                            "session_id": session_id,
+                            "action": fallback_action,
+                            "fallback_status": "yes",
+                            "agent_reason": "step_retry_fallback",
+                        },
+                    )
+                    action = fallback_action
+                except Exception as fallback_exc:
+                    forced_termination_reason = f"step_api_failure: {fallback_exc}"
+                    print(f"[WARN] {forced_termination_reason}", file=sys.stderr)
+                    break
 
-        observation = result["observation"]
-        reward = float(result.get("reward", 0.0))
-        done = bool(result.get("done", False))
-        catastrophic_event = bool(observation.get("catastrophic_event", False))
-        final_info = result.get("info", {})
-        last_step_error = final_info.get("reason") if not final_info.get("action_valid", True) else None
+            observation = result["observation"]
+            reward = float(result.get("reward", 0.0))
+            done = bool(result.get("done", False))
+            catastrophic_event = bool(observation.get("catastrophic_event", False))
+            final_info = result.get("info", {})
+            last_step_error = final_info.get("reason") if not final_info.get("action_valid", True) else None
 
-        last_actions.append(action)
-        if len(last_actions) > REPEAT_ACTION_LIMIT:
-            last_actions.pop(0)
+            last_actions.append(action)
+            if len(last_actions) > REPEAT_ACTION_LIMIT:
+                last_actions.pop(0)
 
-        all_rewards.append(reward)
-        recent_rewards.append(reward)
-        if len(recent_rewards) > NO_PROGRESS_WINDOW:
-            recent_rewards.pop(0)
+            all_rewards.append(reward)
+            recent_rewards.append(reward)
+            if len(recent_rewards) > NO_PROGRESS_WINDOW:
+                recent_rewards.pop(0)
 
-        queue_total = int(observation.get("queue_ns", 0)) + int(observation.get("queue_ew", 0))
-        recent_queue_totals.append(queue_total)
-        if len(recent_queue_totals) > NO_PROGRESS_WINDOW:
-            recent_queue_totals.pop(0)
+            queue_total = int(observation.get("queue_ns", 0)) + int(observation.get("queue_ew", 0))
+            recent_queue_totals.append(queue_total)
+            if len(recent_queue_totals) > NO_PROGRESS_WINDOW:
+                recent_queue_totals.pop(0)
 
-        done_str = "true" if done else "false"
-        error_str = last_step_error if last_step_error else "null"
-        print(f"[STEP] step={step_index} action={action} reward={reward:.2f} done={done_str} error={error_str}")
-        steps_taken += 1
+            # STDOUT: [STEP] line
+            done_str = "true" if done else "false"
+            error_str = last_step_error if last_step_error else "null"
+            print(f"[STEP] step={step_index} action={action} reward={reward:.2f} done={done_str} error={error_str}")
+            steps_taken += 1
 
-        if done:
-            if catastrophic_event:
-                forced_termination_reason = "catastrophic_event"
-                break
-            if steps_taken < required_min_steps:
-                done = False
+            if done:
+                if catastrophic_event:
+                    forced_termination_reason = "catastrophic_event"
+                    break
+                if steps_taken < required_min_steps:
+                    done = False
 
-        if TRACE_API:
-            _append_trace(
-                trace_path,
-                {
-                    "event": "env_step",
-                    "run_id": run_id,
-                    "step": step_index,
-                    "reward": reward,
-                    "done": done,
-                    "score_estimate": float(final_info.get("score_estimate", 0.0)),
-                    "catastrophic_event": bool(observation.get("catastrophic_event", False)),
-                    "queue_ns": _to_int(observation.get("queue_ns")),
-                    "queue_ew": _to_int(observation.get("queue_ew")),
-                    "moved_ns": _to_int(observation.get("moved_ns")),
-                    "moved_ew": _to_int(observation.get("moved_ew")),
-                    "grader_breakdown": final_info.get("grader_breakdown", {}),
-                },
+            if TRACE_API:
+                _append_trace(
+                    trace_path,
+                    {
+                        "event": "env_step",
+                        "run_id": run_id,
+                        "step": step_index,
+                        "reward": reward,
+                        "done": done,
+                        "score_estimate": float(final_info.get("score_estimate", 0.0)),
+                        "catastrophic_event": bool(observation.get("catastrophic_event", False)),
+                        "queue_ns": _to_int(observation.get("queue_ns")),
+                        "queue_ew": _to_int(observation.get("queue_ew")),
+                        "moved_ns": _to_int(observation.get("moved_ns")),
+                        "moved_ew": _to_int(observation.get("moved_ew")),
+                        "grader_breakdown": final_info.get("grader_breakdown", {}),
+                    },
+                )
+
+            repeated_action_loop = (
+                len(last_actions) == REPEAT_ACTION_LIMIT and len(set(last_actions)) == 1
+            )
+            repeated_action_warning = (
+                len(last_actions) >= REPEAT_WARN_LIMIT and len(set(last_actions[-REPEAT_WARN_LIMIT:])) == 1
+            )
+            reward_flat = (
+                len(recent_rewards) == NO_PROGRESS_WINDOW
+                and (max(recent_rewards) - min(recent_rewards)) <= REWARD_FLAT_EPSILON
+            )
+            queue_stalled = (
+                len(recent_queue_totals) == NO_PROGRESS_WINDOW
+                and len(set(recent_queue_totals)) == 1
             )
 
-        repeated_action_loop = (
-            len(last_actions) == REPEAT_ACTION_LIMIT and len(set(last_actions)) == 1
-        )
-        repeated_action_warning = (
-            len(last_actions) >= REPEAT_WARN_LIMIT and len(set(last_actions[-REPEAT_WARN_LIMIT:])) == 1
-        )
-        reward_flat = (
-            len(recent_rewards) == NO_PROGRESS_WINDOW
-            and (max(recent_rewards) - min(recent_rewards)) <= REWARD_FLAT_EPSILON
-        )
-        queue_stalled = (
-            len(recent_queue_totals) == NO_PROGRESS_WINDOW
-            and len(set(recent_queue_totals)) == 1
-        )
-
-        moved_total = int(observation.get("moved_ns", 0)) + int(observation.get("moved_ew", 0))
-        if step_index == 0:
+            moved_total = int(observation.get("moved_ns", 0)) + int(observation.get("moved_ew", 0))
+            if step_index == 0:
+                previous_moved_total = moved_total
+            moved_progress = moved_total - previous_moved_total
             previous_moved_total = moved_total
-        moved_progress = moved_total - previous_moved_total
-        previous_moved_total = moved_total
-        moved_stalled = moved_progress <= 0
+            moved_stalled = moved_progress <= 0
 
-        if repeated_action_warning:
-            if repeated_warning_action != last_actions[-1]:
-                print(f"[WARN] repeated_action_warning:{last_actions[-1]} streak={REPEAT_WARN_LIMIT}", file=sys.stderr)
-                repeated_warning_action = last_actions[-1]
-        else:
-            repeated_warning_action = None
+            if repeated_action_warning:
+                if repeated_warning_action != last_actions[-1]:
+                    print(f"[WARN] repeated_action_warning:{last_actions[-1]} streak={REPEAT_WARN_LIMIT}", file=sys.stderr)
+                    repeated_warning_action = last_actions[-1]
+            else:
+                repeated_warning_action = None
 
-        if steps_taken >= required_min_steps:
-            if repeated_action_loop and (queue_stalled or reward_flat or moved_stalled):
-                forced_termination_reason = f"repeated_action_loop:{last_actions[-1]}"
-                print(f"[WARN] {forced_termination_reason}; forcing termination", file=sys.stderr)
-                break
+            if steps_taken >= required_min_steps:
+                if repeated_action_loop and (queue_stalled or reward_flat or moved_stalled):
+                    forced_termination_reason = f"repeated_action_loop:{last_actions[-1]}"
+                    print(f"[WARN] {forced_termination_reason}; forcing termination", file=sys.stderr)
+                    break
 
-            if reward_flat and queue_stalled:
-                forced_termination_reason = "no_progress_detected"
-                print("[WARN] no_progress_detected; forcing termination", file=sys.stderr)
-                break
+                if reward_flat and queue_stalled:
+                    forced_termination_reason = "no_progress_detected"
+                    print("[WARN] no_progress_detected; forcing termination", file=sys.stderr)
+                    break
 
-    if not done and forced_termination_reason is None and steps_taken >= effective_max_steps:
-        forced_termination_reason = "max_steps_reached"
-        print("[WARN] Reached max steps. Forcing termination.", file=sys.stderr)
+        if not done and forced_termination_reason is None and steps_taken >= effective_max_steps:
+            forced_termination_reason = "max_steps_reached"
+            print("[WARN] Reached max steps. Forcing termination.", file=sys.stderr)
 
-    if forced_termination_reason is not None:
-        try:
-            state_result = _post("/state", {"session_id": session_id})
-            final_info = state_result.get("info", final_info)
-            done = bool(state_result.get("done", done))
-        except Exception as exc:
-            print(f"[WARN] Failed to fetch final state after forced termination: {exc}", file=sys.stderr)
+        if forced_termination_reason is not None:
+            try:
+                state_result = _post("/state", {"session_id": session_id})
+                final_info = state_result.get("info", final_info)
+                done = bool(state_result.get("done", done))
+            except Exception as exc:
+                print(f"[WARN] Failed to fetch final state after forced termination: {exc}", file=sys.stderr)
 
-    score = float(final_info.get("score_estimate", 0.0))
+    finally:
+        # STDOUT: [END] line - always emitted
+        score = float(final_info.get("score_estimate", 0.0))
+        success = score > 0.0 and not bool(observation.get("catastrophic_event", False))
+        success_str = "true" if success else "false"
+        rewards_str = ",".join(f"{r:.2f}" for r in all_rewards)
+        print(f"[END] success={success_str} steps={steps_taken} score={score:.2f} rewards={rewards_str}")
+
     proof_summary = {
         "run_id": run_id,
         "steps_taken": steps_taken,
@@ -675,30 +686,6 @@ def run_episode(task_id: str = "easy") -> int:
                 "done": done,
             },
         )
-
-    catastrophic_reason = None
-    grader_reasons = final_info.get("grader_reasons", [])
-    if isinstance(grader_reasons, list):
-        for reason in grader_reasons:
-            text = str(reason)
-            match = re.search(r"Catastrophic event:\s*([A-Za-z0-9_\-]+)", text)
-            if match:
-                catastrophic_reason = match.group(1).strip()
-                break
-    if not catastrophic_reason and observation.get("catastrophic_event"):
-        catastrophic_reason = "unknown_catastrophe (check simulator logic)"
-
-    print(
-        "[PROOF] "
-        f"run_id={run_id} llm_attempted={llm_calls_attempted} llm_succeeded={llm_calls_succeeded} "
-        f"nonce_verified={nonce_verified_steps} fallback_steps={fallback_steps} sanitized_steps={sanitized_steps}",
-        file=sys.stderr,
-    )
-
-    success = score > 0.0 and not bool(observation.get("catastrophic_event", False))
-    success_str = "true" if success else "false"
-    rewards_str = ",".join(f"{r:.2f}" for r in all_rewards)
-    print(f"[END] success={success_str} steps={steps_taken} rewards={rewards_str}")
 
     if VERIFY_STRICT:
         if llm_calls_succeeded < VERIFY_MIN_SUCCESSFUL_LLM_CALLS:
