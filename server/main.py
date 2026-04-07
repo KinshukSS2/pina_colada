@@ -33,13 +33,7 @@ def _task_summaries() -> list[dict]:
     ]
 
 
-@app.get("/")
-def root() -> dict:
-    return {
-        "service": "traffic-openenv",
-        "status": "ok",
-        "endpoints": ["/reset", "/step", "/state", "/tasks", "/health", "/metadata", "/schema", "/mcp", "/grade"],
-    }
+
 
 
 @app.get("/health")
