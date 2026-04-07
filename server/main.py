@@ -16,17 +16,7 @@ HOST = "0.0.0.0"
 PORT = 7860
 
 
-@app.get("/")
-def root() -> dict:
-    return {
-        "service": "traffic-openenv",
-        "status": "ok",
-        "endpoints": ["/reset", "/step", "/state", "/tasks"],
-    }
-
-
-@app.get("/tasks")
-def get_tasks() -> list[dict]:
+def _task_summaries() -> list[dict]:
     return [
         {
             "id": task.task_id,
@@ -38,6 +28,49 @@ def get_tasks() -> list[dict]:
         }
         for task in task_catalog().values()
     ]
+
+
+@app.get("/")
+def root() -> dict:
+    return {
+        "service": "traffic-openenv",
+        "status": "ok",
+        "endpoints": ["/reset", "/step", "/state", "/tasks", "/health", "/metadata", "/schema"],
+    }
+
+
+@app.get("/health")
+def health() -> dict:
+    return {"status": "ok"}
+
+
+@app.get("/metadata")
+def metadata() -> dict:
+    return {
+        "name": "traffic-control-openenv",
+        "entry_point": "server.main:app",
+        "tasks": _task_summaries(),
+    }
+
+
+@app.get("/schema")
+def schema() -> dict:
+    return {
+        "actions": {
+            "type": "text",
+            "grammar": ["hold", "switch", "prioritize_emergency", "set_ns_green:<n>", "set_ew_green:<n>"],
+        },
+        "observations": {
+            "type": "json",
+            "schema": "Observation",
+        },
+        "tasks": _task_summaries(),
+    }
+
+
+@app.get("/tasks")
+def get_tasks() -> list[dict]:
+    return _task_summaries()
 
 
 @app.post("/reset")
