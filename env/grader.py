@@ -5,12 +5,16 @@ from typing import Dict, List, Tuple
 from env.models import EpisodeSummary, GradeResult, TaskConfig
 
 
+# Epsilon to keep scores in the open interval (0, 1) — never exactly 0 or 1.
+_EPS = 0.01
+
+
 def _clip01(value: float) -> float:
-    return max(0.0, min(1.0, float(value)))
+    return max(_EPS, min(1.0 - _EPS, float(value)))
 
 
 def _normalize_badness(value: float, scale: float) -> float:
-    return _clip01(value / max(1e-6, scale))
+    return _clip01(value / max(_EPS, scale))
 
 
 def _build_reasons(score_terms: Dict[str, float], summary: EpisodeSummary) -> List[str]:
@@ -64,7 +68,7 @@ def compute_score(summary: EpisodeSummary, task: TaskConfig) -> Tuple[float, Lis
     if emergency_ratio > 1.0:
         logs.append(f"Penalty: Emergency wait exceeded by {(emergency_ratio - 1.0):.1%}")
 
-    fairness_score = _clip01(1.0 - (summary.fairness_gap / max(1e-6, task.target_fairness_gap)))
+    fairness_score = _clip01(1.0 - (summary.fairness_gap / max(_EPS, task.target_fairness_gap)))
 
     discipline_base = 1.0 - (summary.invalid_actions / max(1.0, task.max_steps * 0.05))
     safety_modifier = 0.0 if summary.safety_violations > 0 else 1.0
@@ -86,7 +90,7 @@ def compute_grade(summary: EpisodeSummary, task: TaskConfig) -> GradeResult:
     backlog_bad = _normalize_badness(summary.backlog_end, task.target_backlog_end)
     emergency_bad = _normalize_badness(summary.emergency_delay, task.target_emergency_wait)
     emergency_priority = _clip01(summary.emergency_priority)
-    fairness = _clip01(1.0 - (summary.fairness_gap / max(1e-6, task.target_fairness_gap)))
+    fairness = _clip01(1.0 - (summary.fairness_gap / max(_EPS, task.target_fairness_gap)))
     starvation_bad = _normalize_badness(summary.starvation, task.target_starvation_events)
     flicker_bad = _normalize_badness(summary.flicker, task.target_flicker_events)
     stability_bad = _normalize_badness(summary.stability, task.target_stability_penalty)

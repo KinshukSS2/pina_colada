@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from env.models import IntersectionState
 
+_EPS = 0.01
+
+def _clip_reward(value: float) -> float:
+    return max(_EPS, min(1.0 - _EPS, float(value)))
+
 
 def compute_reward(
     previous_state: IntersectionState,
@@ -11,10 +16,10 @@ def compute_reward(
     action_valid: bool,
 ) -> float:
     if current_state.collision_detected:
-        return -1.0
+        return _EPS
 
     if not action_valid:
-        return -0.8
+        return 0.10
 
     queue_prev = previous_state.queue_ns + previous_state.queue_ew
     queue_curr = current_state.queue_ns + current_state.queue_ew
@@ -30,6 +35,9 @@ def compute_reward(
 
     total_reward = reduction_reward + stability_penalty + flow_reward + emergency_wait_penalty
     if current_state.catastrophic_event:
-        total_reward = min(total_reward, -1.0)
+        total_reward = min(total_reward, _EPS)
 
-    return float(max(-1.0, min(1.0, total_reward)))
+    # Shift negative rewards to be safely within the (0, 1) interval.
+    # Linear scale from [-1.0, 1.0] -> [0.01, 0.99] to preserve relative signal.
+    scaled_reward = _EPS + ((total_reward + 1.0) / 2.0) * (1.0 - 2 * _EPS)
+    return _clip_reward(scaled_reward)
