@@ -27,7 +27,17 @@ def root() -> dict:
 
 @app.get("/tasks")
 def get_tasks() -> list[dict]:
-    return [task.model_dump() for task in task_catalog().values()]
+    return [
+        {
+            "id": task.task_id,
+            "task_id": task.task_id,
+            "difficulty": task.difficulty,
+            "description": task.description,
+            "grader": True,
+            "has_grader": True,
+        }
+        for task in task_catalog().values()
+    ]
 
 
 @app.post("/reset")
