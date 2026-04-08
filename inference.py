@@ -659,7 +659,7 @@ def run_episode(task_id: str = "easy") -> int:
     finally:
         # STDOUT: [END] line - always emitted
         score = float(final_info.get("score_estimate", 0.0))
-        success = score > 0.0 and not bool(observation.get("catastrophic_event", False))
+        success = ((score > 0.0) and (not bool(observation.get("catastrophic_event", False))))
         success_str = "true" if success else "false"
         rewards_str = ",".join(f"{r:.2f}" for r in all_rewards)
         print(f"[END] success={success_str} steps={steps_taken} score={score:.2f} rewards={rewards_str}")
