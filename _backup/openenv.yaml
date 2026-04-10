@@ -1,0 +1,42 @@
+spec_version: 1
+name: traffic_control
+description: "Traffic intersection control environment with emergency vehicles, pedestrians, and sensor noise."
+type: space
+runtime: fastapi
+app: server.app:app
+entry_point: server.app:app
+port: 7860
+
+actions:
+  - hold
+  - switch
+  - prioritize_emergency
+  - set_ns_green
+  - set_ew_green
+  - extend
+  - shorten
+
+observations:
+  - queue_ns
+  - queue_ew
+  - current_phase
+  - yellow_active
+  - emergency_ns
+  - emergency_ew
+  - pedestrian_waiting
+  - sensor_status
+  - score_estimate
+
+tasks:
+  easy:
+    difficulty: easy
+    description: "Balanced daytime flow with low emergency pressure."
+  medium:
+    difficulty: medium
+    description: "Directional rush hour with intermittent emergency arrivals."
+  hard:
+    difficulty: hard
+    description: "Peak congestion with emergency contention and fairness constraints."
+  chaos:
+    difficulty: extreme
+    description: "Extreme stress test with simultaneous emergencies, platoons, and sensor blackouts."

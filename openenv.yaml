@@ -1,42 +1,47 @@
-name: traffic-control-openenv
-description: Advanced deterministic traffic benchmark testing POMDP resilience, spatial reasoning, and dynamic constraints.
-entry_point: server.main:app
+spec_version: 1
+name: ticket_triage
+description: "Customer support ticket triage environment — route tickets to the correct department with appropriate priority under SLA pressure."
+type: space
+runtime: fastapi
+app: server.app:app
+entry_point: server.app:app
+port: 7860
 
 actions:
-  type: text
-  grammar:
-    - hold
-    - switch
-    - prioritize_emergency
-    - set_ns_green:<n>
-    - set_ew_green:<n>
+  - "assign:<priority>:<department>"
+  - escalate
+  - defer
+  - skip
+  - "resolve:<ticket_id>"
 
 observations:
-  type: json
-  schema: Observation
-  keys:
-    - timestep
-    - current_phase
-    - ascii_minimap
-    - sensor_status
-    - pedestrian_waiting
-    - action_mask
-    - green_duration
-    - queue_ns
-    - queue_ew
-    - emergency_ns
-    - emergency_ew
+  - current_ticket_id
+  - current_ticket_subject
+  - current_ticket_category_hint
+  - current_ticket_urgency_hint
+  - current_ticket_is_vip
+  - current_ticket_sla_remaining
+  - current_ticket_wait_time
+  - current_ticket_info_hidden
+  - queue_size
+  - queue_by_priority
+  - sla_breaches
+  - sla_warnings
+  - department_load
+  - department_capacity
+  - tickets_resolved
+  - correct_assignments
+  - incorrect_assignments
+  - action_mask
+  - score_estimate
 
 tasks:
-  - id: easy
-    grader: env.grader:compute_grade
-    has_grader: true
-  - id: medium
-    grader: env.grader:compute_grade
-    has_grader: true
-  - id: hard
-    grader: env.grader:compute_grade
-    has_grader: true
-  - id: chaos
-    grader: env.grader:compute_grade
-    has_grader: true
+  easy:
+    difficulty: easy
+    description: "Single-queue ticket triage — assign priority and route tickets to the correct department."
+  medium:
+    difficulty: medium
+    description: "Multi-queue triage with SLA deadlines, escalation, and department capacity limits."
+  hard:
+    difficulty: hard
+    description: "VIP customers, tight SLAs, partial information, and limited department capacity."

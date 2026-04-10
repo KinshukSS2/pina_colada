@@ -3,9 +3,9 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ticket-triage-openenv"
+name = "traffic-control-openenv"
 version = "0.1.0"
-description = "Customer support ticket triage OpenEnv environment — deterministic routing and priority benchmark"
+description = "Traffic control OpenEnv environment — deterministic intersection management benchmark"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -24,8 +24,4 @@ server = "server.app:main"
 
 [tool.setuptools]
 py-modules = ["inference", "validate_project", "validate_submission"]
-packages = ["server", "env", "config", "tasks", "graders", "baseline"]
-
-[tool.pyright]
-reportMissingImports = false
-reportMissingModuleSource = false
+packages = ["server", "env"]

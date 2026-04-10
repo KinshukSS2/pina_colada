@@ -1,20 +1,20 @@
 from __future__ import annotations
 
-import uvicorn  # pylint: disable=import-error
+import uvicorn
 
-from openenv.core.env_server.http_server import create_app  # pylint: disable=import-error
+from openenv.core.env_server.http_server import create_app
 
-from env.environment import TicketTriageEnvironment, task_catalog, _grade_trajectory, _SESSIONS
-from env.schemas import TriageAction, TriageObservation, SimState
+from env.environment import TrafficControlEnvironment
+from env.models import TrafficAction, TrafficObservation
 
 HOST = "0.0.0.0"
 PORT = 7860
 
 app = create_app(
-    TicketTriageEnvironment,
-    TriageAction,
-    TriageObservation,
-    env_name="ticket_triage",
+    TrafficControlEnvironment,
+    TrafficAction,
+    TrafficObservation,
+    env_name="traffic_control",
     max_concurrent_envs=10,
 )
 
@@ -23,10 +23,13 @@ app = create_app(
 # Custom endpoints for backward-compatible session-based HTTP access
 # and grading. These supplement the standard OpenEnv endpoints.
 # ------------------------------------------------------------------
-from typing import Optional
-from pydantic import BaseModel  # pylint: disable=import-error
+from typing import Any, Dict, Optional
+from pydantic import BaseModel
+from env.grader import compute_grade
+from env.models import EpisodeSummary
+from env.tasks import get_task, task_catalog
 
-_legacy_env = TicketTriageEnvironment()
+_legacy_env = TrafficControlEnvironment()
 
 
 def _task_summaries() -> list[dict]:
@@ -36,7 +39,7 @@ def _task_summaries() -> list[dict]:
             "task_id": task.task_id,
             "difficulty": task.difficulty,
             "description": task.description,
-            "grader": f"graders.{task.difficulty}_grader",
+            "grader": "env.grader:compute_grade",
             "has_grader": True,
         }
         for task in task_catalog().values()
@@ -48,18 +51,12 @@ def get_tasks() -> list[dict]:
     return _task_summaries()
 
 
-@app.get("/schema")
-def get_schema() -> dict:
-    return {
-        "action": TriageAction.model_json_schema(),
-        "observation": TriageObservation.model_json_schema(),
-    }
-
-
 class LegacyResetRequest(BaseModel):
     session_id: Optional[str] = None
     task_id: str = "easy"
     seed: Optional[int] = None
+    sensor_noise: bool = False
+    ood_start: bool = False
 
 
 class LegacyStepRequest(BaseModel):
@@ -75,7 +72,7 @@ class LegacyStateRequest(BaseModel):
 
 class GradeRequest(BaseModel):
     task_id: str
-    session_id: str
+    summary: Dict[str, Any]
 
 
 @app.post("/legacy/reset")
@@ -86,6 +83,8 @@ def legacy_reset(request: Optional[LegacyResetRequest] = None) -> dict:
         task_id=request.task_id,
         session_id=request.session_id,
         seed=request.seed,
+        sensor_noise=request.sensor_noise,
+        ood_start=request.ood_start,
     )
 
 
@@ -104,15 +103,13 @@ def legacy_state(request: LegacyStateRequest) -> dict:
 
 @app.post("/grade")
 def grade(request: GradeRequest) -> dict:
-    session = _SESSIONS.get(request.session_id)
-    if session is None:
-        return {"score": 0.0, "breakdown": {}, "reasons": ["session_not_found"]}
-    state: SimState = session["state"]
-    score, breakdown, reasons = _grade_trajectory(request.task_id, state.trajectory)
+    task = get_task(request.task_id)
+    summary = EpisodeSummary(**request.summary)
+    result = compute_grade(summary, task)
     return {
-        "score": score,
-        "breakdown": breakdown,
-        "reasons": reasons,
+        "score": result.score,
+        "breakdown": result.breakdown,
+        "reasons": result.reasons,
     }
 
 

@@ -1,329 +1,422 @@
+"""Core ticket triage simulation logic — deterministic given the same seed."""
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
-from env.models import Action, IntersectionState, TaskConfig
+from env.schemas import Ticket, SimState, TaskConfig
+
 
 VALID_ACTIONS = [
-    "hold",
-    "switch",
-    "prioritize_emergency",
-    "set_ns_green:<n>",
-    "set_ew_green:<n>",
+    "assign:<priority>:<department>",
+    "escalate",
+    "defer",
+    "skip",
+    "resolve:<ticket_id>",
 ]
 
+# Ticket subject templates indexed by category
+_SUBJECTS: Dict[str, List[str]] = {
+    "billing": [
+        "Incorrect charge on invoice",
+        "Refund not processed",
+        "Subscription billing error",
+        "Payment method declined",
+        "Duplicate charge detected",
+    ],
+    "technical": [
+        "Application crash on login",
+        "API returning 500 errors",
+        "Data sync failure",
+        "Performance degradation",
+        "SSL certificate expired",
+    ],
+    "general": [
+        "How to update account info",
+        "Feature request submission",
+        "Feedback on new UI",
+        "Need documentation link",
+        "Account settings question",
+    ],
+    "account": [
+        "Cannot reset password",
+        "Two-factor auth locked out",
+        "Account suspended unexpectedly",
+        "Merge duplicate accounts",
+        "Change account ownership",
+    ],
+    "security": [
+        "Suspicious login detected",
+        "Data breach concern",
+        "Unauthorized access report",
+        "Phishing email received",
+        "API key compromised",
+    ],
+}
 
-def parse_action(raw_action: str) -> Tuple[Action, bool, Optional[str]]:
+_URGENCY_MAP: Dict[str, str] = {
+    "low": "Not urgent — can wait",
+    "medium": "Moderate — within business hours",
+    "high": "Urgent — needs quick resolution",
+    "critical": "CRITICAL — immediate attention required",
+}
+
+
+def _deterministic_int(seed: int, step: int, salt: int) -> int:
+    """Deterministic PRNG returning a non-negative integer."""
+    return ((seed * 1103515245 + (step + 1) * 12345 + salt * 1013904223) & 0x7FFFFFFF)
+
+
+def _deterministic_u01(seed: int, step: int, salt: int) -> float:
+    """Deterministic float in [0, 1)."""
+    return (_deterministic_int(seed, step, salt) % 10000) / 10000.0
+
+
+def _pick(items: list, seed: int, step: int, salt: int):
+    """Pick a deterministic item from a list."""
+    idx = _deterministic_int(seed, step, salt) % len(items)
+    return items[idx]
+
+
+# ---------------------------------------------------------------------------
+# Ticket generation
+# ---------------------------------------------------------------------------
+
+def generate_ticket(
+    state: SimState,
+    task: TaskConfig,
+    ticket_offset: int = 0,
+) -> Ticket:
+    """Generate a single deterministic ticket."""
+    seed = state.seed
+    step = state.timestep
+    salt_base = state.next_ticket_id * 7 + ticket_offset * 13
+
+    # Pick true category
+    true_cat = _pick(task.departments, seed, step, salt_base + 1)
+    # Pick true priority
+    true_pri = _pick(task.priorities, seed, step, salt_base + 2)
+    # Subject
+    cat_subjects = _SUBJECTS.get(true_cat, _SUBJECTS["general"])
+    subject = _pick(cat_subjects, seed, step, salt_base + 3)
+
+    # Hints (may be noisy for harder tasks)
+    category_hint = true_cat
+    urgency_hint = _URGENCY_MAP.get(true_pri, _URGENCY_MAP["medium"])
+
+    # Check if info should be hidden
+    info_hidden = step in task.hidden_info_steps
+
+    if info_hidden:
+        category_hint = "unknown"
+        urgency_hint = "Information unavailable — customer did not specify"
+
+    # VIP check
+    is_vip = step in task.vip_steps
+
+    # SLA deadline based on priority
+    sla_map = {"low": 15, "medium": 10, "high": 6, "critical": 3}
+    sla_base = sla_map.get(true_pri, 10)
+    if is_vip:
+        sla_base = max(2, int(sla_base * 0.5))
+
+    # Deterministic jitter on SLA
+    jitter = (_deterministic_int(seed, step, salt_base + 4) % 3) - 1
+    sla_deadline = max(2, sla_base + jitter)
+
+    ticket = Ticket(
+        ticket_id=state.next_ticket_id,
+        subject=subject,
+        true_category=true_cat,
+        true_priority=true_pri,
+        category_hint=category_hint,
+        urgency_hint=urgency_hint,
+        is_vip=is_vip,
+        sla_deadline=sla_deadline,
+        arrival_step=step,
+        info_hidden=info_hidden,
+    )
+    state.next_ticket_id += 1
+    return ticket
+
+
+# ---------------------------------------------------------------------------
+# Action parsing
+# ---------------------------------------------------------------------------
+
+def parse_action(raw_action: str, _state: SimState, task: TaskConfig) -> Tuple[str, dict, bool, Optional[str]]:
+    """Parse a raw action string into (action_name, params, valid, reason).
+
+    Returns:
+        (name, params_dict, is_valid, rejection_reason)
+    """
     if raw_action is None:
-        return Action(raw="hold", name="hold"), False, "empty_action"
+        return "skip", {}, False, "empty_action"
 
     text = str(raw_action).strip().lower()
     if not text:
-        return Action(raw="hold", name="hold"), False, "blank_action"
+        return "skip", {}, False, "blank_action"
 
-    if text == "hold":
-        return Action(raw=text, name="hold"), True, None
+    if text == "skip":
+        return "skip", {}, True, None
 
-    if text == "switch":
-        return Action(raw=text, name="switch"), True, None
+    if text == "defer":
+        return "defer", {}, True, None
 
-    if text == "prioritize_emergency":
-        return Action(raw=text, name="prioritize_emergency"), True, None
+    if text == "escalate":
+        return "escalate", {}, True, None
 
-    if text.startswith("set_ns_green:"):
-        value = text.replace("set_ns_green:", "", 1)
-        if value.isdigit():
-            return Action(raw=text, name="set_ns_green", value=int(value)), True, None
-        return Action(raw=text, name="hold"), False, "invalid_ns_duration"
+    if text.startswith("resolve:"):
+        parts = text.split(":", 1)
+        if len(parts) == 2 and parts[1].strip().isdigit():
+            tid = int(parts[1].strip())
+            return "resolve", {"ticket_id": tid}, True, None
+        return "skip", {}, False, "invalid_resolve_format"
 
-    if text.startswith("set_ew_green:"):
-        value = text.replace("set_ew_green:", "", 1)
-        if value.isdigit():
-            return Action(raw=text, name="set_ew_green", value=int(value)), True, None
-        return Action(raw=text, name="hold"), False, "invalid_ew_duration"
+    if text.startswith("assign:"):
+        parts = text.split(":")
+        if len(parts) == 3:
+            pri = parts[1].strip()
+            dept = parts[2].strip()
+            if pri in task.priorities and dept in task.departments:
+                return "assign", {"priority": pri, "department": dept}, True, None
+            if pri not in task.priorities:
+                return "skip", {}, False, f"invalid_priority_{pri}"
+            if dept not in task.departments:
+                return "skip", {}, False, f"invalid_department_{dept}"
+        return "skip", {}, False, "invalid_assign_format"
 
-    return Action(raw=text, name="hold"), False, "unknown_action"
-
-
-def _clamp_green(value: int, task: TaskConfig) -> int:
-    return max(task.min_green, min(task.max_green, int(value)))
-
-
-def _toggle_phase(current_phase: str) -> str:
-    return "ew" if current_phase == "ns" else "ns"
-
-
-def _signal_label(state: IntersectionState, lane: str) -> str:
-    if state.yellow_remaining > 0 and state.current_phase == lane:
-        return "YEL"
-    if state.current_phase == lane and state.yellow_remaining == 0:
-        return f"GRN({state.phase_remaining})"
-    return "RED"
+    return "skip", {}, False, "unknown_action"
 
 
-def _deterministic_u01(seed: int, timestep: int, salt: int) -> float:
-    mixed = (seed * 1664525 + (timestep + 1) * 1013904223 + salt * 2654435761) & 0xFFFFFFFF
-    return (mixed % 10000) / 10000.0
+# ---------------------------------------------------------------------------
+# Step logic
+# ---------------------------------------------------------------------------
+
+def inject_tickets(state: SimState, task: TaskConfig) -> None:
+    """Inject new tickets at the current timestep (deterministic)."""
+    idx = min(state.timestep, len(task.arrival_pattern) - 1)
+    n_arrivals = task.arrival_pattern[idx]
+    for i in range(n_arrivals):
+        ticket = generate_ticket(state, task, ticket_offset=i)
+        state.pending_tickets.append(ticket)
+        state.all_tickets.append(ticket)
 
 
-def _deterministic_jitter(seed: int, timestep: int, salt: int) -> int:
-    value = (seed * 1103515245 + (timestep + 1) * 12345 + salt * 1013) & 0x7FFFFFFF
-    return int(value % 3) - 1
+def advance_tickets(state: SimState, _task: TaskConfig) -> None:
+    """Advance wait times and check SLA breaches."""
+    for ticket in state.pending_tickets:
+        ticket.wait_time += 1
+        state.total_wait_time += 1
+        state.max_wait_seen = max(state.max_wait_seen, ticket.wait_time)
+        # SLA check
+        if ticket.wait_time >= ticket.sla_deadline and not ticket.sla_breached:
+            ticket.sla_breached = True
+            state.sla_breaches += 1
+            if ticket.is_vip:
+                state.vip_breaches += 1
+        elif ticket.wait_time >= int(ticket.sla_deadline * 0.75):
+            state.sla_warnings += 1
 
 
-def _generate_ascii(state: IntersectionState) -> str:
-    ns_light = _signal_label(state, "ns")
-    ew_light = _signal_label(state, "ew")
-    q_ns = "?" if state.sensor_status == "OFFLINE" else str(state.queue_ns)
-    q_ew = "?" if state.sensor_status == "OFFLINE" else str(state.queue_ew)
-    ped = "🚶 WARNING" if state.pedestrian_waiting else ""
-    return (
-        f"\n"
-        f"     [ NS: {ns_light} ]\n"
-        f"       |   | ↓ |\n"
-        f"       |   | ↓ | ({q_ns})\n"
-        f"------ +---+---+ ------ {ped}\n"
-        f" EW: {ew_light} |   |   | EW: {ew_light}\n"
-        f" ({q_ew})→ |   |\n"
-        f"------ +---+---+ ------\n"
-        f"       | ↑ |   |\n"
-    )
+def select_current_ticket(state: SimState) -> None:
+    """Select the next ticket for the agent to triage."""
+    if not state.pending_tickets:
+        state.current_ticket_idx = -1
+        return
+    # Pick the oldest unassigned ticket (FIFO with priority boost)
+    best_idx = 0
+    best_score = -1.0
+    for i, t in enumerate(state.pending_tickets):
+        if t.assigned_department is not None:
+            continue
+        # Score: higher = more urgent to show
+        priority_boost = {"low": 0, "medium": 1, "high": 3, "critical": 6}.get(t.true_priority, 0)
+        wait_score = t.wait_time * 2.0
+        vip_boost = 10.0 if t.is_vip else 0.0
+        sla_urgency = max(0, t.sla_deadline - t.wait_time)
+        sla_score = (20.0 - sla_urgency) * 1.5
+        score = wait_score + priority_boost + vip_boost + sla_score
+        if score > best_score:
+            best_score = score
+            best_idx = i
+    state.current_ticket_idx = best_idx
 
 
-def _inject_arrivals(state: IntersectionState, task: TaskConfig) -> None:
-    index = min(state.timestep, task.max_steps - 1)
-    jitter_ns = _deterministic_jitter(state.seed, state.timestep, 31)
-    jitter_ew = _deterministic_jitter(state.seed, state.timestep, 32)
-    state.queue_ns = max(0, state.queue_ns + task.arrivals_ns[index] + jitter_ns)
-    state.queue_ew = max(0, state.queue_ew + task.arrivals_ew[index] + jitter_ew)
-    if index in task.emergency_ns_steps:
-        state.emergency_ns += 1
-        state.emergency_appearances += 1
-    if index in task.emergency_ew_steps:
-        state.emergency_ew += 1
-        state.emergency_appearances += 1
-
-    if _deterministic_u01(state.seed, state.timestep, 33) < 0.05:
-        state.sensor_status = "OFFLINE"
-    else:
-        state.sensor_status = "ONLINE"
-
-    if not state.pedestrian_waiting and _deterministic_u01(state.seed, state.timestep, 34) < 0.08:
-        state.pedestrian_waiting = True
-        state.pedestrian_patience = 3
-
-
-def _phase_capacity(state: IntersectionState, task: TaskConfig) -> Tuple[int, int]:
-    if state.yellow_remaining > 0:
-        return 0, 0
-
-    kinematic_eff = 0.5 if state.green_duration <= 2 else 1.0
-    base_eff = 0.6 if state.lane_health < 1.0 else 1.0
-    effective_capacity = max(1, int(task.base_capacity * kinematic_eff * base_eff))
-
-    if state.current_phase == "ns":
-        bonus = 1 if state.emergency_ns > 0 else 0
-        return effective_capacity + bonus, 0
-    bonus = 1 if state.emergency_ew > 0 else 0
-    return 0, effective_capacity + bonus
-
-
-def _move_vehicles(state: IntersectionState, task: TaskConfig) -> Tuple[int, int]:
-    cap_ns, cap_ew = _phase_capacity(state, task)
-
-    moved_ns = min(state.queue_ns, cap_ns)
-    moved_ew = min(state.queue_ew, cap_ew)
-
-    state.queue_ns -= moved_ns
-    state.queue_ew -= moved_ew
-    state.moved_ns += moved_ns
-    state.moved_ew += moved_ew
-
-    if state.current_phase == "ns" and state.yellow_remaining == 0 and state.emergency_ns > 0 and moved_ns > 0:
-        state.emergency_ns = max(0, state.emergency_ns - 1)
-        state.emergency_priority_hits += 1
-    if state.current_phase == "ew" and state.yellow_remaining == 0 and state.emergency_ew > 0 and moved_ew > 0:
-        state.emergency_ew = max(0, state.emergency_ew - 1)
-        state.emergency_priority_hits += 1
-
-    return moved_ns, moved_ew
-
-
-def _update_wait_and_fairness(state: IntersectionState) -> None:
-    state.total_wait_time += state.queue_ns + state.queue_ew
-    state.queue_wait_ns += state.queue_ns
-    state.queue_wait_ew += state.queue_ew
-    state.emergency_wait_time += 2 * (state.emergency_ns + state.emergency_ew)
-    state.max_wait_seen = max(
-        state.max_wait_seen,
-        state.queue_wait_ns,
-        state.queue_wait_ew,
-    )
-    state.backlog_total = state.queue_ns + state.queue_ew
-
-    moved_total = max(1, state.moved_ns + state.moved_ew)
-    state.fairness_gap = abs(state.moved_ns - state.moved_ew) / moved_total
-
-
-def _register_phase_change(state: IntersectionState, task: TaskConfig) -> None:
-    state.phase_switches += 1
-    dt = state.timestep - state.last_switch_timestep
-    if dt <= task.flicker_window:
-        state.flicker_events += 1
-    if state.current_phase_run < task.min_green:
-        state.stability_penalty += float(task.min_green - state.current_phase_run)
-    state.last_switch_timestep = state.timestep
-    state.current_phase_run = 0
-
-
-def _update_starvation_and_stability(
-    state: IntersectionState,
+def apply_action(
+    state: SimState,
     task: TaskConfig,
-    moved_ns: int,
-    moved_ew: int,
-) -> None:
-    if moved_ns > 0:
-        state.last_service_ns = state.timestep
-    if moved_ew > 0:
-        state.last_service_ew = state.timestep
-
-    ns_idle = state.timestep - state.last_service_ns
-    ew_idle = state.timestep - state.last_service_ew
-    if ns_idle >= task.starvation_threshold and ns_idle % task.starvation_threshold == 0:
-        state.starvation_events += 1
-        state.stability_penalty += 0.5
-    if ew_idle >= task.starvation_threshold and ew_idle % task.starvation_threshold == 0:
-        state.starvation_events += 1
-        state.stability_penalty += 0.5
-
-    moved_total = moved_ns + moved_ew
-    if moved_total <= 0:
-        state.no_progress_steps += 1
-    else:
-        state.no_progress_steps = 0
-    if state.no_progress_steps >= task.starvation_threshold:
-        state.stability_penalty += 0.5
-
-
-def _apply_safety_kills(state: IntersectionState, task: TaskConfig) -> None:
-    if state.catastrophic_event:
-        state.done = True
-        return
-
-    emergency_delay = state.emergency_wait_time / max(1, state.timestep + 1)
-    if state.collision_detected:
-        state.catastrophic_event = True
-        state.catastrophic_reason = "safety_violation"
-
-    if emergency_delay >= task.catastrophic_emergency_wait:
-        state.catastrophic_event = True
-        state.catastrophic_reason = "emergency_delay_breach"
-
-    if state.backlog_total >= task.catastrophic_backlog:
-        state.catastrophic_event = True
-        state.catastrophic_reason = "backlog_overflow"
-
-    if state.flicker_events >= int(3 * task.target_flicker_events):
-        state.catastrophic_event = True
-        state.catastrophic_reason = "signal_flicker_instability"
-
-    if state.catastrophic_event:
-        state.done = True
-
-
-def apply_action(state: IntersectionState, task: TaskConfig, action: Action, valid: bool) -> None:
-    if state.pedestrian_waiting:
-        if action.name not in {"hold", "switch"}:
-            state.collision_detected = True
-            state.safety_violations += 1
-            return
-        if action.name == "hold" and state.yellow_remaining == 0 and state.phase_remaining > 0:
-            state.pedestrian_patience -= 1
-            if state.pedestrian_patience <= 0:
-                state.collision_detected = True
-                state.safety_violations += 1
-                return
-        elif action.name == "switch":
-            state.pedestrian_waiting = False
-            state.pedestrian_patience = 0
-
-    if state.yellow_remaining > 0:
-        if action.name != "hold":
-            state.collision_detected = True
-            state.safety_violations += 1
-        return
-
+    action_name: str,
+    params: dict,
+    valid: bool,
+) -> Tuple[bool, Optional[str]]:
+    """Apply an action to the current state. Returns (success, reason)."""
     if not valid:
         state.invalid_actions += 1
-        return
+        return False, "invalid_action"
 
-    if action.name == "hold":
-        return
+    if state.current_ticket_idx < 0 or state.current_ticket_idx >= len(state.pending_tickets):
+        if action_name == "skip":
+            return True, None
+        state.invalid_actions += 1
+        return False, "no_ticket_available"
 
-    if action.name == "switch":
-        state.current_phase = _toggle_phase(state.current_phase)
-        state.phase_remaining = task.min_green
-        state.yellow_remaining = 2
-        _register_phase_change(state, task)
-        return
+    ticket = state.pending_tickets[state.current_ticket_idx]
 
-    if action.name == "set_ns_green":
-        value = _clamp_green(action.value or task.min_green, task)
-        state.current_phase = "ns"
-        state.phase_remaining = value
-        state.yellow_remaining = 0
-        _register_phase_change(state, task)
-        return
+    if action_name == "skip":
+        return True, None
 
-    if action.name == "set_ew_green":
-        value = _clamp_green(action.value or task.min_green, task)
-        state.current_phase = "ew"
-        state.phase_remaining = value
-        state.yellow_remaining = 0
-        _register_phase_change(state, task)
-        return
+    if action_name == "defer":
+        ticket.deferred = True
+        state.tickets_deferred += 1
+        # Move to end of queue
+        state.pending_tickets.pop(state.current_ticket_idx)
+        state.pending_tickets.append(ticket)
+        return True, None
 
-    if action.name == "prioritize_emergency":
-        if state.emergency_ns <= 0 and state.emergency_ew <= 0:
+    if action_name == "escalate":
+        ticket.escalated = True
+        state.tickets_escalated += 1
+        state.pending_tickets.pop(state.current_ticket_idx)
+        state.resolved_tickets.append(ticket)
+        return True, None
+
+    if action_name == "assign":
+        pri = params.get("priority", "medium")
+        dept = params.get("department", "general")
+
+        # Check department capacity
+        current_load = state.department_load.get(dept, 0)
+        if current_load >= task.agent_capacity:
             state.invalid_actions += 1
-            return
-        previous_phase = state.current_phase
-        if state.emergency_ns >= state.emergency_ew:
-            state.current_phase = "ns"
+            return False, f"department_{dept}_at_capacity"
+
+        ticket.assigned_priority = pri
+        ticket.assigned_department = dept
+        state.tickets_assigned += 1
+        state.department_load[dept] = current_load + 1
+
+        # Check correctness
+        correct_dept = (dept == ticket.true_category)
+        correct_pri = (pri == ticket.true_priority)
+        if correct_dept and correct_pri:
+            state.correct_assignments += 1
         else:
-            state.current_phase = "ew"
-        state.phase_remaining = max(task.min_green, 2)
-        if state.current_phase != previous_phase:
-            state.yellow_remaining = 2
-        if state.current_phase != previous_phase:
-            _register_phase_change(state, task)
+            state.incorrect_assignments += 1
+
+        # Mark as resolved (assigned = in-progress toward resolution)
+        ticket.resolved = True
+        state.tickets_resolved += 1
+        state.pending_tickets.pop(state.current_ticket_idx)
+        state.resolved_tickets.append(ticket)
+        return True, None
+
+    if action_name == "resolve":
+        tid = params.get("ticket_id", -1)
+        found = None
+        for i, t in enumerate(state.pending_tickets):
+            if t.ticket_id == tid:
+                found = i
+                break
+        if found is not None:
+            t = state.pending_tickets.pop(found)
+            t.resolved = True
+            state.tickets_resolved += 1
+            state.resolved_tickets.append(t)
+            return True, None
+        state.invalid_actions += 1
+        return False, "ticket_not_found"
+
+    return False, "unhandled_action"
 
 
-def simulate_step(state: IntersectionState, task: TaskConfig, action: Action, valid: bool) -> Tuple[int, int]:
-    apply_action(state, task, action, valid)
+def simulate_step(
+    state: SimState,
+    task: TaskConfig,
+    action_name: str,
+    params: dict,
+    valid: bool,
+) -> Tuple[bool, Optional[str]]:
+    """Execute one simulation step. Returns (action_success, reason)."""
+    # 1. Apply the agent's action
+    success, reason = apply_action(state, task, action_name, params, valid)
 
-    _inject_arrivals(state, task)
+    # 2. Inject new tickets
+    inject_tickets(state, task)
 
-    state.lane_health = 0.6 if (state.timestep // 10) % 2 == 1 else 1.0
+    # 3. Advance waiting/SLA
+    advance_tickets(state, task)
 
-    if state.phase_remaining <= 0:
-        state.phase_remaining = task.min_green
+    # 4. Select next ticket to present
+    select_current_ticket(state)
 
-    if state.yellow_remaining > 0:
-        state.green_duration = 0
-    else:
-        state.green_duration += 1
+    # 5. Record trajectory snapshot
+    snapshot = _build_snapshot(state, task, action_name, params, valid, success, reason)
+    state.trajectory.append(snapshot)
 
-    moved_ns, moved_ew = _move_vehicles(state, task)
-    _update_wait_and_fairness(state)
-    _update_starvation_and_stability(state, task, moved_ns, moved_ew)
-    state.current_phase_run += 1
-
-    state.phase_remaining = max(0, state.phase_remaining - 1)
-    state.yellow_remaining = max(0, state.yellow_remaining - 1)
-    _apply_safety_kills(state, task)
+    # 6. Advance timestep
     state.timestep += 1
-    if state.timestep >= task.max_steps or state.collision_detected:
+    if state.timestep >= task.max_steps:
         state.done = True
 
-    return moved_ns, moved_ew
+    return success, reason
+
+
+def _build_snapshot(
+    state: SimState,
+    _task: TaskConfig,
+    action_name: str,
+    params: dict,
+    valid: bool,
+    success: bool,
+    reason: Optional[str],
+) -> dict:
+    """Build a trajectory snapshot for grading."""
+    return {
+        "timestep": state.timestep,
+        "action": action_name,
+        "params": params,
+        "valid": valid,
+        "success": success,
+        "reason": reason,
+        "state_snapshot": {
+            "queue_size": len(state.pending_tickets),
+            "tickets_assigned": state.tickets_assigned,
+            "tickets_resolved": state.tickets_resolved,
+            "correct_assignments": state.correct_assignments,
+            "incorrect_assignments": state.incorrect_assignments,
+            "sla_breaches": state.sla_breaches,
+            "sla_warnings": state.sla_warnings,
+            "vip_breaches": state.vip_breaches,
+            "total_wait_time": state.total_wait_time,
+            "max_wait_seen": state.max_wait_seen,
+            "department_load": dict(state.department_load),
+            "pending_count": len(state.pending_tickets),
+            "resolved_count": len(state.resolved_tickets),
+        },
+    }
+
+
+def build_action_mask(state: SimState, task: TaskConfig) -> Dict[str, bool]:
+    """Build action mask for current state."""
+    has_ticket = (
+        state.current_ticket_idx >= 0
+        and state.current_ticket_idx < len(state.pending_tickets)
+    )
+    mask: Dict[str, bool] = {
+        "skip": True,
+        "defer": has_ticket,
+        "escalate": has_ticket,
+    }
+    # assign for each priority-department combo
+    for dept in task.departments:
+        load = state.department_load.get(dept, 0)
+        at_capacity = load >= task.agent_capacity
+        for pri in task.priorities:
+            key = f"assign:{pri}:{dept}"
+            mask[key] = has_ticket and not at_capacity
+
+    # resolve for pending tickets
+    for t in state.pending_tickets:
+        mask[f"resolve:{t.ticket_id}"] = True
+
+    return mask

@@ -2,114 +2,180 @@ from __future__ import annotations
 
 import unittest
 
-from env.environment import TrafficControlEnvironment
-from env.grader import compute_grade
-from env.models import EpisodeSummary
-from env.tasks import get_task
+from env.environment import TicketTriageEnvironment, _SESSIONS
+from env.schemas import TriageAction
+from graders.easy_grader import EasyGrader
+from graders.medium_grader import MediumGrader
+from graders.hard_grader import HardGrader
+from baseline.rule_based_agent import baseline_action
+
+
+def _run_episode(task_id: str, seed: int = 42, agent=None):
+    """Run a full episode and return (score, state)."""
+    if agent is None:
+        agent = baseline_action
+    env = TicketTriageEnvironment()
+    sid = f"test-run-{task_id}-{seed}"
+    obs = env.reset(task_id=task_id, session_id=sid, seed=seed)
+    while not obs.done:
+        action = agent(obs.model_dump())
+        obs = env.step(TriageAction(action=action, session_id=sid))
+    state = _SESSIONS[sid]["state"]
+    grader = {"easy": EasyGrader(), "medium": MediumGrader(), "hard": HardGrader()}[task_id]
+    score = grader.grade(state.trajectory)
+    return score, state
 
 
 class GraderTests(unittest.TestCase):
-    def test_perfect_trajectory_scores_high(self) -> None:
-        task = get_task("medium")
-        summary = EpisodeSummary(
-            task_id=task.task_id,
-            steps=task.max_steps,
-            moved_total=int(task.target_passed * 1.08),
-            avg_wait=task.target_wait * 0.28,
-            max_wait=task.target_max_wait * 0.30,
-            backlog_end=task.target_backlog_end * 0.22,
-            emergency_delay=task.target_emergency_wait * 0.20,
-            emergency_priority=0.98,
-            fairness_gap=task.target_fairness_gap * 0.22,
-            starvation=0.0,
-            flicker=0.0,
-            stability=task.target_stability_penalty * 0.10,
-            invalid_actions=0,
-            catastrophic_event=False,
-            catastrophic_reason=None,
-        )
-
-        grade = compute_grade(summary, task)
-
-        self.assertGreaterEqual(grade.score, 0.88)
-        self.assertLessEqual(grade.score, 1.0)
-
-    def test_selfish_trajectory_scores_moderate(self) -> None:
-        task = get_task("medium")
-        summary = EpisodeSummary(
-            task_id=task.task_id,
-            steps=task.max_steps,
-            moved_total=int(task.target_passed * 1.05),
-            avg_wait=task.target_wait * 0.85,
-            max_wait=task.target_max_wait * 1.05,
-            backlog_end=task.target_backlog_end * 0.95,
-            emergency_delay=task.target_emergency_wait * 1.15,
-            emergency_priority=0.55,
-            fairness_gap=task.target_fairness_gap * 1.55,
-            starvation=task.target_starvation_events * 1.20,
-            flicker=task.target_flicker_events * 0.65,
-            stability=task.target_stability_penalty * 0.95,
-            invalid_actions=2,
-            catastrophic_event=False,
-            catastrophic_reason=None,
-        )
-
-        grade = compute_grade(summary, task)
-
-        self.assertGreaterEqual(grade.score, 0.20)
-        self.assertLessEqual(grade.score, 0.72)
-
-    def test_catastrophic_trajectory_scores_near_zero(self) -> None:
-        task = get_task("hard")
-        summary = EpisodeSummary(
-            task_id=task.task_id,
-            steps=task.max_steps,
-            moved_total=int(task.target_passed * 0.75),
-            avg_wait=task.target_wait * 1.40,
-            max_wait=task.target_max_wait * 1.65,
-            backlog_end=task.target_backlog_end * 1.50,
-            emergency_delay=task.target_emergency_wait * 2.20,
-            emergency_priority=0.15,
-            fairness_gap=task.target_fairness_gap * 2.10,
-            starvation=task.target_starvation_events * 2.00,
-            flicker=task.target_flicker_events * 2.40,
-            stability=task.target_stability_penalty * 1.90,
-            invalid_actions=8,
-            catastrophic_event=True,
-            catastrophic_reason="unsafe_bypass_transition",
-        )
-
-        grade = compute_grade(summary, task)
-
-        self.assertGreaterEqual(grade.score, 0.0)
-        self.assertLessEqual(grade.score, 0.05)
-
-    def test_same_trajectory_is_deterministic(self) -> None:
-        env_a = TrafficControlEnvironment()
-        env_b = TrafficControlEnvironment()
+    def test_easy_grader_scores_positive(self) -> None:
+        env = TicketTriageEnvironment()
+        env.reset(task_id="easy", session_id="test-easy")
         actions = [
-            "hold",
-            "switch",
-            "set_ns_green:4",
-            "hold",
-            "prioritize_emergency",
-            "set_ew_green:3",
-            "hold",
-            "switch",
-            "hold",
-            "hold",
+            "assign:medium:billing",
+            "assign:high:technical",
+            "assign:low:general",
+            "assign:medium:billing",
+            "assign:high:technical",
+        ]
+        for a in actions:
+            env.step(TriageAction(action=a, session_id="test-easy"))
+
+        grader = EasyGrader()
+        state = _SESSIONS["test-easy"]["state"]
+        score = grader.grade(state.trajectory)
+        self.assertGreaterEqual(score, 0.0)
+        self.assertLessEqual(score, 1.0)
+        self.assertGreater(score, 0.01)
+
+    def test_medium_grader_with_varied_actions(self) -> None:
+        env = TicketTriageEnvironment()
+        env.reset(task_id="medium", session_id="test-med")
+        actions = [
+            "assign:high:billing",
+            "escalate",
+            "assign:medium:technical",
+            "assign:low:general",
+            "assign:critical:account",
+            "defer",
+            "assign:high:technical",
+        ]
+        for a in actions:
+            env.step(TriageAction(action=a, session_id="test-med"))
+
+        grader = MediumGrader()
+        state = _SESSIONS["test-med"]["state"]
+        score = grader.grade(state.trajectory)
+        self.assertGreaterEqual(score, 0.0)
+        self.assertLessEqual(score, 1.0)
+
+    def test_hard_grader_penalizes_all_skip(self) -> None:
+        env = TicketTriageEnvironment()
+        env.reset(task_id="hard", session_id="test-hard")
+        for _ in range(10):
+            env.step(TriageAction(action="skip", session_id="test-hard"))
+
+        grader = HardGrader()
+        state = _SESSIONS["test-hard"]["state"]
+        score = grader.grade(state.trajectory)
+        self.assertLessEqual(score, 0.15)
+
+    def test_deterministic_same_seed(self) -> None:
+        env_a = TicketTriageEnvironment()
+        env_b = TicketTriageEnvironment()
+        actions = [
+            "assign:medium:billing",
+            "assign:high:technical",
+            "escalate",
+            "assign:low:general",
+            "defer",
         ]
 
-        first = env_a.reset(task_id="medium", session_id="det-a", seed=123, sensor_noise=True, ood_start=True)
-        second = env_b.reset(task_id="medium", session_id="det-b", seed=123, sensor_noise=True, ood_start=True)
+        obs_a = env_a.reset(task_id="easy", session_id="det-a", seed=42)
+        obs_b = env_b.reset(task_id="easy", session_id="det-b", seed=42)
 
         for action in actions:
-            first = env_a.step("det-a", action)
-            second = env_b.step("det-b", action)
+            obs_a = env_a.step(TriageAction(action=action, session_id="det-a"))
+            obs_b = env_b.step(TriageAction(action=action, session_id="det-b"))
 
-        self.assertEqual(first.info.score_estimate, second.info.score_estimate)
-        self.assertEqual(first.info.grader_breakdown, second.info.grader_breakdown)
-        self.assertEqual(first.info.grader_reasons, second.info.grader_reasons)
+        self.assertEqual(obs_a.score_estimate, obs_b.score_estimate)
+        self.assertEqual(obs_a.tickets_resolved, obs_b.tickets_resolved)
+        self.assertEqual(obs_a.correct_assignments, obs_b.correct_assignments)
+
+    # ------------------------------------------------------------------
+    # Score ordering: Easy > Medium > Hard (baseline agent)
+    # ------------------------------------------------------------------
+
+    def test_baseline_score_ordering(self) -> None:
+        """Easy must score strictly higher than Medium, Medium higher than Hard."""
+        easy_score, _ = _run_episode("easy", seed=42)
+        medium_score, _ = _run_episode("medium", seed=42)
+        hard_score, _ = _run_episode("hard", seed=42)
+
+        self.assertGreater(easy_score, medium_score,
+                           f"Easy ({easy_score:.4f}) must be > Medium ({medium_score:.4f})")
+        self.assertGreater(medium_score, hard_score,
+                           f"Medium ({medium_score:.4f}) must be > Hard ({hard_score:.4f})")
+
+    def test_ordering_across_seeds(self) -> None:
+        """Ordering holds across multiple seeds."""
+        for seed in [1, 7, 99, 256, 1337]:
+            easy, _ = _run_episode("easy", seed=seed)
+            medium, _ = _run_episode("medium", seed=seed)
+            hard, _ = _run_episode("hard", seed=seed)
+            self.assertGreater(easy, medium,
+                               f"seed={seed}: Easy ({easy:.4f}) must be > Medium ({medium:.4f})")
+            self.assertGreater(medium, hard,
+                               f"seed={seed}: Medium ({medium:.4f}) must be > Hard ({hard:.4f})")
+
+    # ------------------------------------------------------------------
+    # Anti-exploit: degenerate strategies score very low
+    # ------------------------------------------------------------------
+
+    def test_all_skip_scores_low_all_tasks(self) -> None:
+        """All-skip agent should score < 0.10 on every task."""
+        def skip_agent(_obs):
+            return "skip"
+        for task_id in ["easy", "medium", "hard"]:
+            score, _ = _run_episode(task_id, seed=42, agent=skip_agent)
+            self.assertLess(score, 0.10,
+                            f"All-skip on {task_id}: {score:.4f} should be < 0.10")
+
+    def test_all_defer_scores_low(self) -> None:
+        """All-defer agent should score < 0.15 on every task."""
+        def defer_agent(_obs):
+            return "defer"
+        for task_id in ["easy", "medium", "hard"]:
+            score, _ = _run_episode(task_id, seed=42, agent=defer_agent)
+            self.assertLess(score, 0.15,
+                            f"All-defer on {task_id}: {score:.4f} should be < 0.15")
+
+    def test_single_dept_spam_penalised(self) -> None:
+        """Agent that always assigns to one department should score lower than baseline."""
+        def spam_agent(_obs):
+            return "assign:medium:billing"
+        for task_id in ["easy", "medium", "hard"]:
+            baseline_score, _ = _run_episode(task_id, seed=42)
+            spam_score, _ = _run_episode(task_id, seed=42, agent=spam_agent)
+            self.assertLess(spam_score, baseline_score,
+                            f"Spam on {task_id}: {spam_score:.4f} should be < baseline {baseline_score:.4f}")
+
+    # ------------------------------------------------------------------
+    # Scores bounded and deterministic
+    # ------------------------------------------------------------------
+
+    def test_scores_bounded_01(self) -> None:
+        """All scores must be in [0, 1]."""
+        for task_id in ["easy", "medium", "hard"]:
+            score, _ = _run_episode(task_id, seed=42)
+            self.assertGreaterEqual(score, 0.0)
+            self.assertLessEqual(score, 1.0)
+
+    def test_deterministic_full_episode(self) -> None:
+        """Same seed must yield identical scores."""
+        for task_id in ["easy", "medium", "hard"]:
+            s1, _ = _run_episode(task_id, seed=123)
+            s2, _ = _run_episode(task_id, seed=123)
+            self.assertEqual(s1, s2, f"{task_id}: {s1} != {s2}")
 
 
 if __name__ == "__main__":
