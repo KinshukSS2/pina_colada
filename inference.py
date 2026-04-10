@@ -324,13 +324,16 @@ def run_episode(task_id: str = "easy") -> int:
                     current_model = model_candidates[active_model_index]
                     llm_result = _llm_action(client, observation, current_model, run_id, step_index)
                     action = llm_result["action"]
-                except (OSError, ValueError, KeyError, TypeError) as exc:
+                except Exception as exc:  # pylint: disable=broad-except
                     msg = str(exc).lower()
+                    print(f"[WARN] LLM call failed for model={model_candidates[active_model_index]}: {exc}", file=sys.stderr)
                     if "404" in msg or "429" in msg:
                         if active_model_index + 1 < len(model_candidates):
                             active_model_index += 1
+                            print(f"[INFO] Switching to fallback model={model_candidates[active_model_index]}", file=sys.stderr)
                         else:
                             llm_enabled = False
+                            print("[INFO] Disabling LLM and using rule-based fallback", file=sys.stderr)
                     action = _get_smart_fallback(observation)
             else:
                 action = _get_smart_fallback(observation)
