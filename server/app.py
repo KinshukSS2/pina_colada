@@ -19,6 +19,15 @@ app = create_app(
 )
 
 
+@app.get("/")
+def root() -> dict:
+    return {
+        "service": "ticket_triage_openenv",
+        "status": "ok",
+        "docs": "/docs",
+    }
+
+
 # ------------------------------------------------------------------
 # Custom endpoints for backward-compatible session-based HTTP access
 # and grading. These supplement the standard OpenEnv endpoints.
