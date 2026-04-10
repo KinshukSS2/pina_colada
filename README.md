@@ -1,3 +1,14 @@
+---
+title: Ticket Triage OpenEnv
+emoji: 🚦
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+sdk_version: "latest"
+app_file: app.py
+pinned: false
+---
+
 # Ticket Triage OpenEnv
 
 ## Environment Description
